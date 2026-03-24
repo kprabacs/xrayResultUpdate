@@ -1,0 +1,60 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model TestRunSummary {
+  id              Int      @id @default(autoincrement())
+  releaseName     String
+  module          String
+  channel         String
+  device          String
+  totalTests      Int
+  passCount       Int
+  failCount       Int
+  passPercentage  Float
+  totalDuration   Float
+  p1Executed      Int
+  p2Executed      Int
+  p3Executed      Int
+  p4Executed      Int
+  reportHash      String?  @unique // To prevent duplicate uploads
+  createdAt       DateTime @default(now())
+
+  testCaseResults TestCaseResult[]
+}
+
+model TestCaseResult {
+  id               Int      @id @default(autoincrement())
+  testCaseId       String?  // Extracted from tags like @Test_XXXX
+  testCaseName     String
+  releaseName      String
+  runAttempt       Int
+  status           String
+  duration         Float
+  errorMessage     String?  @db.Text
+  stackTrace       String?  @db.Text
+  createdAt        DateTime @default(now())
+  
+  TestRunSummary   TestRunSummary @relation(fields: [testRunSummaryId], references: [id], onDelete: Cascade)
+  testRunSummaryId Int
+}
+
+model FlakyTest {
+  id               Int      @id @default(autoincrement())
+  testCaseId       String
+  testCaseName     String
+  releaseName      String
+  failCount        Int      @default(0)
+  passCount        Int      @default(0)
+  lastStatus       String
+  updatedAt        DateTime @updatedAt
+
+  @@unique([testCaseId, releaseName])
+}

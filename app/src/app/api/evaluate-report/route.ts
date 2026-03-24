@@ -5,6 +5,7 @@ import path from 'path';
 import os from 'os';
 
 export async function POST(request: Request) {
+  console.log("Evaluate report API called.");
   const tempFiles: string[] = [];
 
   try {
@@ -12,23 +13,25 @@ export async function POST(request: Request) {
     const file = formData.get('file') as File | null;
 
     if (!file) {
+      console.error("No file found in form data.");
       return NextResponse.json({ error: 'No file uploaded.' }, { status: 400 });
     }
 
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'evaluate-'));
+    console.log(`Received file: ${file.name}`);
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cucumber-'));
     tempFiles.push(tempDir);
     const tempFilePath = path.join(tempDir, file.name);
-    
-    const fileBuffer = Buffer.from(await file.arrayBuffer());
-    await fs.writeFile(tempFilePath, fileBuffer);
-    tempFiles.push(tempFilePath);
+    await fs.writeFile(tempFilePath, Buffer.from(await file.arrayBuffer()));
+    console.log(`File saved to temporary path: ${tempFilePath}`);
 
-    const venvPython = path.join(process.cwd(), 'venv', 'bin', 'python');
-    const scriptPath = path.join(process.cwd(), 'evaluate_report.py');
+    const pythonExecutable = path.resolve(process.cwd(), 'venv', 'bin', 'python');
+    const scriptPath = path.resolve(process.cwd(), 'evaluate_report.py');
 
-    const processPromise = new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
-      const pythonProcess = spawn(venvPython, [scriptPath, tempFilePath]);
-
+    const pythonResult = await new Promise<string>((resolve, reject) => {
+      console.log(`Spawning python script: ${pythonExecutable} ${scriptPath}`);
+      const pythonProcess = spawn(pythonExecutable, [scriptPath, tempFilePath]);
+      
       let stdout = '';
       let stderr = '';
 
@@ -41,41 +44,58 @@ export async function POST(request: Request) {
       });
 
       pythonProcess.on('close', (code) => {
-        resolve({ stdout, stderr, code });
+        console.log(`Python script exited with code ${code}`);
+        if (stderr) {
+            console.error('Python stderr:', stderr);
+        }
+        if (code !== 0) {
+          return reject(new Error(`Python script failed with code ${code}: ${stderr || 'No stderr output.'}`));
+        }
+        console.log('Python stdout:', stdout);
+        resolve(stdout);
       });
 
       pythonProcess.on('error', (err) => {
-        reject(err);
+          console.error('Failed to start python process:', err);
+          reject(new Error(`Failed to start python process: ${err.message}`));
       });
     });
 
-    const { stdout, stderr, code } = await processPromise;
-
-    if (code !== 0) {
-      console.error('Python script error:', stderr);
-      throw new Error(`Script failed with code ${code}: ${stderr}`);
+    if (!pythonResult.trim()) {
+        console.error("Python script produced no output.");
+        throw new Error("Evaluation script produced no output. The report might be empty or invalid.");
     }
 
-    const result = JSON.parse(stdout);
+    let result;
+    try {
+        result = JSON.parse(pythonResult);
+        console.log("Successfully parsed python script output.");
+    } catch (e) {
+        console.error("Failed to parse python script output as JSON:", pythonResult);
+        throw new Error("Evaluation script returned invalid data.");
+    }
 
-    if (result.status === 'issues_found') {
-      const excelPath = result.file_path;
-      tempFiles.push(excelPath); 
-      const excelBuffer = await fs.readFile(excelPath);
-      const headers = new Headers();
-      headers.append('Content-Disposition', `attachment; filename="evaluation_report.xlsx"`);
-      headers.append('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      return new NextResponse(excelBuffer, { headers });
+    if (result.status === 'issues_found' && result.file_path) {
+      console.log("Issues found, reading generated Excel report.");
+      const buffer = await fs.readFile(result.file_path);
+      return new NextResponse(buffer, {
+        status: 200,
+        headers: {
+          'Content-Disposition': `attachment; filename="evaluation_report.xlsx"`,
+          'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        },
+      });
     } else {
+      console.log("No issues found or no file generated, returning JSON response.");
       return NextResponse.json(result);
     }
 
   } catch (error) {
-    console.error('API Error:', error);
-    const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred.';
-    return NextResponse.json({ error: `Backend error: ${errorMessage}` }, { status: 500 });
+    console.error('Error in /api/evaluate-report:', error);
+    const message = error instanceof Error ? error.message : "An unknown error occurred.";
+    return NextResponse.json({ error: message }, { status: 500 });
   } finally {
-    // Cleanup
+    console.log("Cleaning up temporary files:", tempFiles);
     for (const file of tempFiles) {
         try {
             await fs.rm(file, { recursive: true, force: true });

@@ -1,13 +1,14 @@
 'use client';
 
 import React, { useState, useRef } from 'react';
-import { File, UploadCloud } from 'lucide-react';
+import { File, UploadCloud, CheckCircle, AlertCircle } from 'lucide-react';
 import JSZip from 'jszip';
 import { processCucumberReportV2, triggerDownload, processBulkCucumberReportV2 } from '@/utils/reportProcessor';
 
 type UpdateType = 'create' | 'update';
 type Workflow = 'single-cucumber' | 'bulk-cucumber' | 'single-xray' | 'bulk-xray' | '';
 type JsonType = 'cucumber' | 'xray';
+type ActionType = '' | 'saveToDb' | 'uploadToXray' | 'both';
 
 const moduleOptions = [
     'Creditgateway', 'Discovery', 'Bag', 'Checkout', 'E2E Trans', 'Giftcard',
@@ -19,7 +20,6 @@ const moduleOptions = [
 export default function XrayUploadForm() {
   // Common State
   const [file, setFile] = useState<File | null>(null);
-  const [jiraToken, setJiraToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<React.ReactNode | boolean>(false);
@@ -28,14 +28,16 @@ export default function XrayUploadForm() {
   // UI State
   const [jsonType, setJsonType] = useState<JsonType>('cucumber');
   const [workflow, setWorkflow] = useState<Workflow>('');
+  const [actionType, setActionType] = useState<ActionType>('');
   
-  // Specific State
+  // Xray-specific State
+  const [jiraToken, setJiraToken] = useState('');
   const [testPlanKey, setTestPlanKey] = useState('');
   const [testExecKey, setTestExecKey] = useState('');
   const [updateType, setUpdateType] = useState<UpdateType | ''>('');
   const [summary, setSummary] = useState('');
   
-  // Excel Report State
+  // DB and Excel State
   const [generateExcel, setGenerateExcel] = useState(false);
   const [release, setRelease] = useState('');
   const [module, setModule] = useState('');
@@ -47,8 +49,8 @@ export default function XrayUploadForm() {
   const [evaluationResult, setEvaluationResult] = useState<{message: string, status: string} | null>(null);
 
 
-  const resetForm = (keepWorkflow = false) => {
-    setFile(null);
+  const resetForm = (keepWorkflow = false, keepFile = false) => {
+    if (!keepFile) setFile(null);
     setTestExecKey('');
     setTestPlanKey('');
     setJiraToken('');
@@ -60,7 +62,8 @@ export default function XrayUploadForm() {
     setChannel('');
     setDevice('');
     setEvaluationResult(null);
-    if (fileInputRef.current) {
+    setActionType('');
+    if (!keepFile && fileInputRef.current) {
       fileInputRef.current.value = '';
     }
     if (!keepWorkflow) {
@@ -75,7 +78,7 @@ export default function XrayUploadForm() {
   
   const handleWorkflowChange = (newWorkflow: Workflow) => {
     setWorkflow(newWorkflow);
-    resetForm(true); // Keep workflow, reset rest
+    resetForm(true, true); // Keep workflow AND file, reset rest
     if(newWorkflow === 'single-xray' || newWorkflow === 'bulk-xray') {
       setUpdateType('update');
     }
@@ -83,46 +86,54 @@ export default function XrayUploadForm() {
   
   const handleGenerateExcel = async () => {
     if (!file) return;
-    if (!release.trim() || !module.trim() || !channel.trim() || !device.trim()) {
-        setError('Release, Module, Channel and Device are mandatory for excel generation.');
-        return;
+    if (workflow === 'single-cucumber' && (!release.trim() || !module.trim() || !channel.trim() || !device.trim())) {
+        throw new Error('Release, Module, Channel and Device are mandatory for excel generation.');
     }
-    try {
+    if(workflow === 'bulk-cucumber' && !release.trim()){
+        throw new Error('Release is mandatory for excel generation.');
+    }
+
+    if(workflow === 'single-cucumber'){
         const blob = await processCucumberReportV2(file, release, module, channel, device);
         const filename = `cucumber_report_${Date.now()}.xlsx`;
         triggerDownload(blob, filename);
-    } catch(err) {
-        setError(err instanceof Error ? err.message : 'Could not generate excel report.');
-    }
-  }
-
-  const handleBulkGenerateExcel = async () => {
-    if (!file) return;
-    if (!release.trim()) {
-        setError('Release is mandatory for excel generation.');
-        return;
-    }
-    try {
+    } else if (workflow === 'bulk-cucumber') {
         const { blob, skippedFiles } = await processBulkCucumberReportV2(file, release);
         const filename = `bulk_cucumber_report_${Date.now()}.xlsx`;
         triggerDownload(blob, filename);
         if (skippedFiles.length > 0) {
             setError(`Report generated, but some files were skipped due to incorrect naming format: ${skippedFiles.join(', ')}`);
         }
-    } catch(err) {
-        setError(err instanceof Error ? err.message : 'Could not generate bulk excel report.');
     }
   }
 
   const processFile = (selectedFile: File) => {
-    const expectedExtension = (workflow === 'bulk-cucumber' || workflow === 'bulk-xray') ? '.zip' : '.json';
-    if (selectedFile.name.endsWith(expectedExtension)) {
-        setFile(selectedFile);
-        setError(null);
-    } else {
-        setError(`Please select a valid ${expectedExtension} file`);
-        setFile(null);
+    const isZip = selectedFile.name.endsWith('.zip');
+    const isJson = selectedFile.name.endsWith('.json');
+
+    if (!isZip && !isJson) {
+      setError('Please select a valid .json or .zip file');
+      setFile(null);
+      return;
     }
+
+    // If workflow is already selected, validate extension
+    if (workflow) {
+      const needsZip = (workflow === 'bulk-cucumber' || workflow === 'bulk-xray');
+      if (needsZip && !isZip) {
+        setError('Selected workflow requires a .zip file');
+        setFile(null);
+        return;
+      }
+      if (!needsZip && !isJson) {
+        setError('Selected workflow requires a .json file');
+        setFile(null);
+        return;
+      }
+    }
+
+    setFile(selectedFile);
+    setError(null);
   }
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -162,7 +173,7 @@ export default function XrayUploadForm() {
       });
 
       if (!response.ok) {
-        const err = await response.json();
+        const err = await safeJsonResponse(response);
         throw new Error(err.error || 'Evaluation failed.');
       }
 
@@ -170,10 +181,16 @@ export default function XrayUploadForm() {
       if (contentType && contentType.includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')) {
         const blob = await response.blob();
         triggerDownload(blob, 'evaluation_report.xlsx');
+        setEvaluationResult({ message: 'Evaluation report has been downloaded.', status: 'issues_found' });
         setSuccess('Evaluation report has been downloaded.');
       } else {
-        const result = await response.json();
+        const result = await safeJsonResponse(response);
         setEvaluationResult(result);
+        if (result.status === 'success') {
+          setSuccess(result.message);
+        } else {
+          setError(result.message);
+        }
       }
 
     } catch (err) {
@@ -182,185 +199,219 @@ export default function XrayUploadForm() {
       setEvaluating(false);
     }
   };
-
-  const handleSingleCucumberSubmit = async () => {
-    if (!file) { setError('Please upload a Cucumber JSON file.'); return false; }
-    if (!updateType) { setError('Please select an update type.'); return false; }
-    if (updateType === 'update' && !testExecKey.trim()) { setError('Test Execution Key is mandatory for updates.'); return false; }
-    if (updateType === 'create' && !summary.trim()) { setError('Summary is mandatory for creating executions.'); return false; }
-    if (!testPlanKey.trim()) { setError('Test Plan Key is mandatory.'); return false; }
-    if (!jiraToken.trim()) { setError('Jira API Token is mandatory.'); return false; }
+  
+  const runUploadToXray = async () => {
+    if (!workflow) { throw new Error('Please select a workflow to upload to Xray.'); }
+    if (!jiraToken.trim()) { throw new Error('XRAY API Token is mandatory.'); }
+    if (!file) { throw new Error('Please upload a file.'); }
     
-    if (generateExcel) await handleGenerateExcel();
-
-    const fileContent = await file.text();
-    const cucumberReport = JSON.parse(fileContent);
-    const response = await fetch('/api/upload-to-xray', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cucumberReport, token: jiraToken, updateType, testExecKey, testPlanKey, summary }),
-    });
-    const result = await response.json();
-    if (!response.ok) { throw new Error(result.error || `Failed to import execution results. Status: ${response.status}`); }
-    setSuccess(<p>Successfully processed results for execution:{' '}<a href={result.self} target="_blank" rel="noopener noreferrer" className="font-bold text-indigo-600 hover:underline">{result.key}</a></p>);
-    return true;
-  };
-
-  const handleBulkCucumberSubmit = async () => {
-    if (!file) { setError('Please upload a ZIP file.'); return false; }
-    if (!updateType) { setError('Please select an update type.'); return false; }
-    if (updateType === 'update' && !testExecKey.trim()) { setError('Test Execution Key is mandatory for updates.'); return false; }
-    if (!testPlanKey.trim()) { setError('Test Plan Key is mandatory for bulk uploads.'); return false; }
-    if (!jiraToken.trim()) { setError('Jira API Token is mandatory for bulk uploads.'); return false; }
-
-    if (generateExcel) await handleBulkGenerateExcel();
-
-    const zip = await JSZip.loadAsync(file);
-    const jsonFiles = Object.values(zip.files).filter(f => !f.dir && f.name.endsWith('.json') && !f.name.startsWith('__MACOSX/'));
-    if (jsonFiles.length === 0) { setError('The ZIP file contains no valid .json files.'); return false; }
-
-    const uploadPromises = jsonFiles.map(async (jsonFile) => {
-      try {
-        const fileContent = await jsonFile.async('string');
-        const cucumberReport = JSON.parse(fileContent);
-        const featureName = cucumberReport[0]?.name || 'Execution from bulk upload';
+    // 1. Single Cucumber Upload
+    if (workflow === 'single-cucumber') {
+        if (!updateType) { throw new Error('Please select a Type of Action.'); }
+        if (updateType === 'update' && !testExecKey.trim()) { throw new Error('Test Execution Key is mandatory for updates.'); }
+        if (updateType === 'create' && !summary.trim()) { throw new Error('Summary is mandatory for creating executions.'); }
+        if (!testPlanKey.trim()) { throw new Error('Test Plan Key is mandatory.'); }
         
-        const body: any = { 
-            cucumberReport, 
-            token: jiraToken, 
-            updateType, 
-            testPlanKey 
-        };
-        if (updateType === 'create') {
-            body.summary = featureName;
-        } else { // update
-            body.testExecKey = testExecKey;
+        const fileContent = await file.text();
+        const cucumberReport = JSON.parse(fileContent);
+        const response = await fetch('/api/upload-to-xray', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cucumberReport, token: jiraToken, updateType, testExecKey, testPlanKey, summary }),
+        });
+        const result = await safeJsonResponse(response);
+        if (!response.ok) { 
+            let msg = result.error || `Xray Upload Failed: Status ${response.status}`;
+            if (result.skipped && result.skipped.length > 0) {
+                msg += ` (Skipped tests not updated: ${result.skipped.join(', ')})`;
+            }
+            throw new Error(msg); 
+        }
+        let successMsg = `Xray Upload Successful: ${result.key || result.testExecutionKey || 'Done'}`;
+        if (result.skipped && result.skipped.length > 0) {
+            successMsg += ` (Skipped tests not updated: ${result.skipped.join(', ')})`;
+        }
+        return successMsg;
+    }
+
+    // 2. Bulk Cucumber Upload
+    if (workflow === 'bulk-cucumber') {
+        if (!updateType) { throw new Error('Please select a Type of Action.'); }
+        if (updateType === 'update' && !testExecKey.trim()) { throw new Error('Test Execution Key is mandatory for updates.'); }
+        if (updateType === 'create' && !summary.trim()) { throw new Error('Summary is mandatory for creating executions.'); }
+        if (!testPlanKey.trim()) { throw new Error('Test Plan Key is mandatory.'); }
+
+        const zip = await JSZip.loadAsync(file);
+        const jsonFiles = Object.values(zip.files).filter(f => !f.dir && f.name.endsWith('.json') && !f.name.startsWith('__MACOSX/'));
+        if (jsonFiles.length === 0) { throw new Error('The ZIP file contains no valid .json files.'); }
+
+        let mergedCucumberReport: unknown[] = [];
+        for (const jsonFile of jsonFiles) {
+            const content = await jsonFile.async('string');
+            const report = JSON.parse(content);
+            if (Array.isArray(report)) {
+                mergedCucumberReport = [...mergedCucumberReport, ...report];
+            } else {
+                mergedCucumberReport.push(report);
+            }
         }
 
         const response = await fetch('/api/upload-to-xray', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify({ cucumberReport: mergedCucumberReport, token: jiraToken, updateType, testExecKey, testPlanKey, summary }),
         });
-        const result = await response.json();
-        if (!response.ok) { throw new Error(result.error || `Status ${response.status}`); }
-        return { status: 'fulfilled' as const, value: result, filename: jsonFile.name };
-      } catch (err) {
-        return { status: 'rejected' as const, reason: err instanceof Error ? err.message : 'Unknown error', filename: jsonFile.name };
-      }
-    });
-    const results = await Promise.all(uploadPromises);
-    const successfulUploads = results.filter((r): r is Extract<typeof r, { status: 'fulfilled' }> => r.status === 'fulfilled');
-    const failedUploads = results.filter((r): r is Extract<typeof r, { status: 'rejected' }> => r.status === 'rejected');
-    if (successfulUploads.length > 0) {
-      const successDetails = (<div><p>{successfulUploads.length} of {jsonFiles.length} files uploaded successfully.</p><ul className="list-disc list-inside mt-2 text-xs">{successfulUploads.map(res => (<li key={res.value.key}>{res.filename}: Processed{' '}<a href={res.value.self} target="_blank" rel="noopener noreferrer" className="font-bold text-indigo-600 hover:underline">{res.value.key}</a></li>))}</ul></div>);
-      setSuccess(successDetails);
+        const result = await safeJsonResponse(response);
+        if (!response.ok) { 
+            let msg = result.error || `Bulk Xray Upload Failed: Status ${response.status}`;
+            if (result.skipped && result.skipped.length > 0) {
+                msg += ` (Skipped tests not updated: ${result.skipped.join(', ')})`;
+            }
+            throw new Error(msg); 
+        }
+        let successMsg = `Bulk Xray Upload Successful: ${result.key || result.testExecutionKey || 'Done'}`;
+        if (result.skipped && result.skipped.length > 0) {
+            successMsg += ` (Skipped tests not updated: ${result.skipped.join(', ')})`;
+        }
+        return successMsg;
     }
-    if (failedUploads.length > 0) {
-      const failedFiles = failedUploads.map(f => `${f.filename} (${f.reason})`).join(', ');
-      setError(`Bulk upload partially failed. ${failedUploads.length} files failed to upload: ${failedFiles}`);
-    }
-    return successfulUploads.length > 0;
-  };
 
-  const handleXraySubmit = async () => {
-    if (!file) { setError('File, Test Execution Key, and Jira Token are mandatory.'); return false; }
-    if (!testExecKey.trim() || !jiraToken.trim()) { return false; }
-    
-    if (generateExcel) await handleGenerateExcel();
-
-    const fileContent = await file.text();
-    const xrayReport = JSON.parse(fileContent);
-
-    const response = await fetch('/api/upload-to-xray', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            cucumberReport: xrayReport, // Re-using the same backend key for simplicity
-            token: jiraToken,
-            updateType: 'update', // Always update for pre-formatted Xray JSON
-            testExecKey: testExecKey,
-            testPlanKey: testPlanKey,
-        }),
-    });
-    const result = await response.json();
-    if (!response.ok) { throw new Error(result.error || `Failed to import execution results. Status: ${response.status}`); }
-    setSuccess(<p>Successfully updated execution:{' '}<a href={result.self} target="_blank" rel="noopener noreferrer" className="font-bold text-indigo-600 hover:underline">{result.key}</a></p>);
-    return true;
-  };
-  
-  const handleBulkXraySubmit = async () => {
-    if (!file) { setError('Please upload a ZIP file.'); return false; }
-    if (!jiraToken.trim()) { setError('Jira API Token is mandatory for bulk uploads.'); return false; }
-
-    if (generateExcel) await handleBulkGenerateExcel();
-
-    const zip = await JSZip.loadAsync(file);
-    const jsonFiles = Object.values(zip.files).filter(f => !f.dir && f.name.endsWith('.json') && !f.name.startsWith('__MACOSX/'));
-    if (jsonFiles.length === 0) { setError('The ZIP file contains no valid .json files.'); return false; }
-
-    const uploadPromises = jsonFiles.map(async (jsonFile) => {
-      try {
-        const fileContent = await jsonFile.async('string');
+    // 3. Single Xray Upload
+    if (workflow === 'single-xray') {
+        if (!testExecKey.trim()) { throw new Error('Test Execution Key is mandatory.'); }
+        
+        const fileContent = await file.text();
         const xrayReport = JSON.parse(fileContent);
-        const executionKey = jsonFile.name.replace('.json', '');
-
+        
         const response = await fetch('/api/upload-to-xray', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            cucumberReport: xrayReport,
-            token: jiraToken,
-            updateType: 'update',
-            testExecKey: executionKey,
-          }),
+          body: JSON.stringify({ xrayReport, token: jiraToken, updateType: 'update', testExecKey, testPlanKey }),
         });
-        const result = await response.json();
-        if (!response.ok) { throw new Error(result.error || `Status ${response.status}`); }
-        return { status: 'fulfilled' as const, value: result, filename: jsonFile.name };
-      } catch (err) {
-        return { status: 'rejected' as const, reason: err instanceof Error ? err.message : 'Unknown error', filename: jsonFile.name };
-      }
+        const result = await safeJsonResponse(response);
+        if (!response.ok) { throw new Error(result.error || `Xray Upload Failed: Status ${response.status}`); }
+        return `Xray Upload Successful: ${result.key || result.testExecutionKey || 'Done'}`;
+    }
+
+    // 4. Bulk Xray Upload
+    if (workflow === 'bulk-xray') {
+        const zip = await JSZip.loadAsync(file);
+        const jsonFiles = Object.values(zip.files).filter(f => !f.dir && f.name.endsWith('.json') && !f.name.startsWith('__MACOSX/'));
+        if (jsonFiles.length === 0) { throw new Error('The ZIP file contains no valid .json files.'); }
+
+        const results: string[] = [];
+        for (const jsonFile of jsonFiles) {
+            const fileName = jsonFile.name.split('/').pop() || '';
+            const derivedExecKey = fileName.replace('.json', '');
+            
+            try {
+                const content = await jsonFile.async('string');
+                const xrayReport = JSON.parse(content);
+                
+                const response = await fetch('/api/upload-to-xray', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ xrayReport, token: jiraToken, updateType: 'update', testExecKey: derivedExecKey, testPlanKey }),
+                });
+                const result = await safeJsonResponse(response);
+                if (!response.ok) { 
+                    results.push(`${fileName}: Failed - ${result.error}`);
+                } else {
+                    results.push(`${fileName}: Success - ${result.key || result.testExecutionKey}`);
+                }
+            } catch (err) {
+                results.push(`${fileName}: Error - ${err instanceof Error ? err.message : 'Unknown error'}`);
+            }
+        }
+        return `Bulk Xray Upload Results: ${results.join('; ')}`;
+    }
+    
+    throw new Error("Selected Xray workflow is not yet implemented.");
+  };
+
+  const safeJsonResponse = async (response: Response) => {
+    const contentType = response.headers.get("content-type");
+    if (contentType && contentType.indexOf("application/json") !== -1) {
+      return await response.json();
+    } else {
+      const text = await response.text();
+      throw new Error(`Server returned non-JSON response (${response.status}): ${text.substring(0, 100)}...`);
+    }
+  };
+
+  const runSaveToDb = async () => {
+    if (!file) { throw new Error('Please upload a file.'); }
+    if (jsonType !== 'cucumber') { throw new Error('Saving to database is only supported for Cucumber reports.'); }
+    
+    const dbFormData = new FormData();
+    dbFormData.append('file', file);
+    let endpoint = '';
+
+    if (workflow === 'single-cucumber') {
+        if (!release.trim() || !module.trim() || !channel.trim() || !device.trim()) {
+            throw new Error('Release, Module, Channel, and Device are mandatory for saving a single report.');
+        }
+        dbFormData.append('releaseName', release);
+        dbFormData.append('module', module);
+        dbFormData.append('channel', channel);
+        dbFormData.append('device', device);
+        endpoint = '/api/save-report';
+    } else if (workflow === 'bulk-cucumber') {
+        if (!release.trim()) { throw new Error('Release is mandatory for saving a bulk report.'); }
+        dbFormData.append('releaseName', release);
+        endpoint = '/api/save-bulk-report';
+    } else {
+        throw new Error('Please select a valid Cucumber workflow (single or bulk).');
+    }
+    
+    const response = await fetch(endpoint, {
+        method: 'POST',
+        body: dbFormData,
     });
 
-    const results = await Promise.all(uploadPromises);
-    const successfulUploads = results.filter((r): r is Extract<typeof r, { status: 'fulfilled' }> => r.status === 'fulfilled');
-    const failedUploads = results.filter((r): r is Extract<typeof r, { status: 'rejected' }> => r.status === 'rejected');
-
-    if (successfulUploads.length > 0) {
-      const successDetails = (<div><p>{successfulUploads.length} of {jsonFiles.length} files uploaded successfully.</p><ul className="list-disc list-inside mt-2 text-xs">{successfulUploads.map(res => (<li key={res.value.key}>{res.filename}: Updated{' '}<a href={res.value.self} target="_blank" rel="noopener noreferrer" className="font-bold text-indigo-600 hover:underline">{res.value.key}</a></li>))}</ul></div>);
-      setSuccess(successDetails);
-    }
-    if (failedUploads.length > 0) {
-      const failedFiles = failedUploads.map(f => `${f.filename} (${f.reason})`).join(', ');
-      setError(`Bulk upload partially failed. ${failedUploads.length} files failed to upload: ${failedFiles}`);
-    }
-    return successfulUploads.length > 0;
+    const result = await safeJsonResponse(response);
+    if (!response.ok) { throw new Error(result.error || 'Failed to save to database.'); }
+    return result.message || 'Successfully saved to database.';
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(false);
-    setEvaluationResult(null);
 
-    if ((jsonType === 'cucumber' || jsonType === 'xray') && !workflow) {
-        setError('Please select a workflow.');
-        return;
-    }
+    if (!actionType) { setError("Please select a 'Type of WorkFlow'."); return; }
+    if (!file) { setError("Please upload a file."); return; }
 
     setLoading(true);
     try {
-        let wasSuccessful = false;
-        if (workflow === 'single-cucumber') wasSuccessful = await handleSingleCucumberSubmit();
-        else if (workflow === 'bulk-cucumber') wasSuccessful = await handleBulkCucumberSubmit();
-        else if (workflow === 'single-xray') wasSuccessful = await handleXraySubmit();
-        else if (workflow === 'bulk-xray') wasSuccessful = await handleBulkXraySubmit();
-        
-        if (wasSuccessful) {
-            resetForm();
-            setTimeout(() => setSuccess(false), 15000);
+        if (generateExcel) {
+            await handleGenerateExcel();
         }
+
+        const results: string[] = [];
+        const actionsToRun = [];
+
+        if (actionType === 'saveToDb' || actionType === 'both') {
+            actionsToRun.push(runSaveToDb());
+        }
+        if (actionType === 'uploadToXray' || actionType === 'both') {
+            actionsToRun.push(runUploadToXray());
+        }
+
+        const settledResults = await Promise.allSettled(actionsToRun);
+
+        settledResults.forEach(res => {
+            if (res.status === 'fulfilled') {
+                results.push(res.value);
+            } else {
+                results.push(res.reason.message);
+            }
+        });
+        
+        setSuccess(<ul>{results.map((r, i) => <li key={i}>{r}</li>)}</ul>);
+        resetForm();
+        setTimeout(() => setSuccess(false), 20000);
+
     } catch (err) {
         setError(err instanceof Error ? err.message : 'An unexpected error occurred.');
     } finally {
@@ -370,9 +421,9 @@ export default function XrayUploadForm() {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-8">
-      {/* Workflow Selector */}
+      {/* Step 1: Report Type */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">Select Report Type</label>
+        <label className="block text-sm font-medium text-gray-700 mb-2">Step 1: Select Report Type</label>
         <div className="flex space-x-2">
             <button type="button" onClick={() => handleJsonTypeChange('cucumber')}
                 className={`flex-1 py-2 px-4 rounded-lg text-sm font-semibold transition-colors ${jsonType === 'cucumber' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>
@@ -385,9 +436,10 @@ export default function XrayUploadForm() {
         </div>
       </div>
 
+      {/* Step 2: Cucumber Workflow */}
       {jsonType === 'cucumber' && (
         <div>
-            <label htmlFor="cucumber-workflow" className="block text-sm font-medium text-gray-700 mb-2">Select Cucumber Workflow</label>
+            <label htmlFor="cucumber-workflow" className="block text-sm font-medium text-gray-700 mb-2">Step 2: Select Cucumber Workflow</label>
             <select id="cucumber-workflow" value={workflow} onChange={(e) => handleWorkflowChange(e.target.value as Workflow)}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black">
                 <option value="" disabled>Select a workflow...</option>
@@ -397,9 +449,10 @@ export default function XrayUploadForm() {
         </div>
       )}
 
+      {/* Step 2: Xray Workflow */}
       {jsonType === 'xray' && (
         <div>
-            <label htmlFor="xray-workflow" className="block text-sm font-medium text-gray-700 mb-2">Select Xray Workflow</label>
+            <label htmlFor="xray-workflow" className="block text-sm font-medium text-gray-700 mb-2">Step 2: Select Xray Workflow</label>
             <select id="xray-workflow" value={workflow} onChange={(e) => handleWorkflowChange(e.target.value as Workflow)}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black">
                 <option value="" disabled>Select a workflow...</option>
@@ -408,36 +461,124 @@ export default function XrayUploadForm() {
             </select>
         </div>
       )}
-      
+
+      {/* Step 3: Action Type */}
+      {workflow && (
+        <div>
+            <label htmlFor="actionType" className="block text-sm font-medium text-gray-700 mb-2">Step 3: Type of WorkFlow <span className="text-red-500">*</span></label>
+            <select id="actionType" value={actionType} onChange={(e) => setActionType(e.target.value as ActionType)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black">
+                <option value="" disabled>Select...</option>
+                {jsonType === 'cucumber' && <option value="saveToDb">Save to Database</option>}
+                <option value="uploadToXray">Update result to Xray</option>
+                {jsonType === 'cucumber' && <option value="both">Save to Database and Update result to Xray</option>}
+            </select>
+        </div>
+      )}
+
       {/* File Upload */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-3">
-          Upload {(workflow === 'bulk-cucumber' || workflow === 'bulk-xray') ? 'ZIP Archive' : 'JSON Report'} <span className="text-red-500">*</span>
+          Step 4: Upload {(workflow === 'bulk-cucumber' || workflow === 'bulk-xray') ? 'ZIP Archive' : 'JSON Report'} <span className="text-red-500">*</span>
         </label>
         <div onDragOver={handleDragOver} onDrop={handleDrop} className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-indigo-500 hover:bg-indigo-50 transition-colors cursor-pointer">
             <div className="flex flex-col items-center justify-center text-gray-500">
                 <UploadCloud size={48} className="mb-4 text-gray-400" />
                 <p className="font-semibold mb-2">Drag & drop your file here, or{' '}<label htmlFor="xray-file-input" className="text-indigo-600 hover:underline cursor-pointer">click to browse</label></p>
-                <p className="text-xs">Supports {(workflow === 'bulk-cucumber' || workflow === 'bulk-xray') ? '.zip' : '.json'} files only</p>
-                <input type="file" accept={(workflow === 'bulk-cucumber' || workflow === 'bulk-xray') ? '.zip' : '.json'} onChange={handleFileChange} className="hidden" id="xray-file-input" ref={fileInputRef}/>
+                <p className="text-xs">Supports .zip or .json files</p>
+                <input type="file" accept=".zip,.json" onChange={handleFileChange} className="hidden" id="xray-file-input" ref={fileInputRef}/>
             </div>
             {file && <div className="mt-6 p-3 bg-green-50 text-green-800 rounded-lg text-sm flex items-center justify-center"><File size={16} className="mr-2" /><span>{file.name} ({(file.size / 1024).toFixed(2)} KB)</span></div>}
         </div>
       </div>
       
-      <button type="button" onClick={handleEvaluate} disabled={evaluating || !file}
-        className="w-full bg-gray-500 hover:bg-gray-600 disabled:bg-gray-400 text-white font-bold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center">
-        {evaluating ? 'Evaluating...' : 'Evaluate'}
-      </button>
+      {/* Evaluate button can be separate */}
+      <div className="space-y-4">
+        <button type="button" onClick={handleEvaluate} disabled={evaluating || !file}
+            className="w-full bg-gray-500 hover:bg-gray-600 disabled:bg-gray-400 text-white font-bold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center">
+            {evaluating ? 'Evaluating...' : 'Evaluate Report Quality'}
+        </button>
+
+        {evaluationResult && (
+            <div className={`p-4 rounded-lg flex items-start space-x-3 ${evaluationResult.status === 'success' ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-amber-50 text-amber-800 border border-amber-200'}`}>
+                {evaluationResult.status === 'success' ? <CheckCircle size={20} className="mt-0.5 flex-shrink-0" /> : <AlertCircle size={20} className="mt-0.5 flex-shrink-0" />}
+                <div>
+                    <p className="font-semibold text-sm">{evaluationResult.status === 'success' ? 'Good News!' : 'Report Issues Detected'}</p>
+                    <p className="text-sm">{evaluationResult.message}</p>
+                </div>
+            </div>
+        )}
+      </div>
       
-      {/* 3. Fields Area */}
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-3">Provide Details</label>
-        <div className="grid grid-cols-1 gap-6">
+      {/* Step 5: Fields Area */}
+      {/* Metadata for DB and Excel */}
+      {jsonType === 'cucumber' && (actionType === 'saveToDb' || actionType === 'both') && (
+         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6 border border-gray-200 rounded-lg mt-6">
+            <h3 className="col-span-1 md:col-span-2 text-lg font-semibold text-gray-800 -mb-2">Report Metadata</h3>
+            <p className="col-span-1 md:col-span-2 text-sm text-gray-500 -mt-2">Provide details for database records and Excel reports.</p>
+            
+            <div>
+                <label htmlFor="release" className="block text-sm font-medium text-gray-700 mb-2">
+                    Release <span className="text-red-500">*</span>
+                </label>
+                <input type="text" id="release" value={release} onChange={(e) => setRelease(e.target.value)} placeholder="e.g., v1.0.0"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black"/>
+            </div>
+
+            {workflow === 'single-cucumber' && (
+                <>
+                    <div>
+                        <label htmlFor="module" className="block text-sm font-medium text-gray-700 mb-2">
+                            Module <span className="text-red-500">*</span>
+                        </label>
+                        <input type="text" id="module" list="module-options" value={module} onChange={(e) => setModule(e.target.value)} placeholder="e.g., Checkout"
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black"/>
+                        <datalist id="module-options">
+                            {moduleOptions.map(opt => <option key={opt} value={opt} />)}
+                        </datalist>
+                    </div>
+                    <div>
+                        <label htmlFor="channel" className="block text-sm font-medium text-gray-700 mb-2">
+                            Channel <span className="text-red-500">*</span>
+                        </label>
+                        <select id="channel" value={channel} onChange={(e) => setChannel(e.target.value)}
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black">
+                            <option value="" disabled>Select a channel...</option>
+                            <option value="mcom">mcom</option>
+                            <option value="bcom">bcom</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label htmlFor="device" className="block text-sm font-medium text-gray-700 mb-2">
+                            Device <span className="text-red-500">*</span>
+                        </label>
+                        <select id="device" value={device} onChange={(e) => setDevice(e.target.value)}
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black">
+                            <option value="" disabled>Select a device...</option>
+                            <option value="Desktop">Desktop</option>
+                            <option value="MEW">MEW</option>
+                            <option value="TAB">TAB</option>
+                        </select>
+                    </div>
+                </>
+            )}
+             <div className="col-span-1 md:col-span-2">
+                <label className="flex items-center">
+                    <input type="checkbox" checked={generateExcel} onChange={(e) => setGenerateExcel(e.target.checked)} className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded" />
+                    <span className="ml-2 text-sm text-gray-900">Generate accompanying Excel Report</span>
+                </label>
+             </div>
+        </div>
+      )}
+
+      {/* Xray Specific fields */}
+      {(actionType === 'uploadToXray' || actionType === 'both') && (
+        <div className="grid grid-cols-1 gap-6 p-6 border border-gray-200 rounded-lg mt-6">
+            <h3 className="col-span-1 text-lg font-semibold text-gray-800 -mb-2">Xray Details</h3>
             {jsonType === 'cucumber' && (
               <>
                 <div>
-                  <label htmlFor="updateType" className="block text-sm font-medium text-gray-700 mb-2">Update Type <span className="text-red-500">*</span></label>
+                  <label htmlFor="updateType" className="block text-sm font-medium text-gray-700 mb-2">Type of Action <span className="text-red-500">*</span></label>
                   <select id="updateType" value={updateType} onChange={(e) => setUpdateType(e.target.value as UpdateType)} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black">
                       <option value="" disabled>Select an update type...</option>
                       <option value="create">Create New Test Execution</option>
@@ -475,85 +616,28 @@ export default function XrayUploadForm() {
             )}
 
             <div>
-              <label htmlFor="jiraToken" className="block text-sm font-medium text-gray-700 mb-2">Jira API Token <span className="text-red-500">*</span></label>
-              <input type="password" id="jiraToken" value={jiraToken} onChange={(e) => setJiraToken(e.target.value)} placeholder="Enter your secret Jira API Token" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black"/>
+              <label htmlFor="jiraToken" className="block text-sm font-medium text-gray-700 mb-2">XRAY API Token <span className="text-red-500">*</span></label>
+              <input type="password" id="jiraToken" value={jiraToken} onChange={(e) => setJiraToken(e.target.value)} placeholder="Enter your secret XRAY API Token" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black"/>
             </div>
-        </div>
-      </div>
-      
-    {(workflow === 'single-cucumber' || workflow === 'bulk-cucumber' || workflow === 'single-xray' || workflow === 'bulk-xray') && (
-    <div className="mt-6">
-        <label className="flex items-center">
-        <input type="checkbox" checked={generateExcel} onChange={(e) => setGenerateExcel(e.target.checked)} className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded" />
-        <span className="ml-2 text-sm text-gray-900">Generate Excel Report</span>
-        </label>
-    </div>
-    )}
-
-    {generateExcel && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6 border-t border-gray-200 mt-6">
-             {(workflow === 'single-cucumber' || workflow === 'single-xray' || workflow === 'bulk-cucumber' || workflow === 'bulk-xray') && (
-                <div>
-                    <label htmlFor="release" className="block text-sm font-medium text-gray-700 mb-2">
-                        Release <span className="text-red-500">*</span>
-                    </label>
-                    <input type="text" id="release" value={release} onChange={(e) => setRelease(e.target.value)} placeholder="e.g., v1.0.0"
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black"/>
-                </div>
-             )}
-            {(workflow === 'single-cucumber' || workflow === 'single-xray') && (
-                <>
-                    <div>
-                        <label htmlFor="module" className="block text-sm font-medium text-gray-700 mb-2">
-                            Module <span className="text-red-500">*</span>
-                        </label>
-                        <input type="text" id="module" list="module-options" value={module} onChange={(e) => setModule(e.target.value)} placeholder="e.g., Checkout"
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black"/>
-                        <datalist id="module-options">
-                            {moduleOptions.map(opt => <option key={opt} value={opt} />)}
-                        </datalist>
-                    </div>
-                    <div>
-                        <label htmlFor="channel" className="block text-sm font-medium text-gray-700 mb-2">
-                            Channel <span className="text-red-500">*</span>
-                        </label>
-                        <select id="channel" value={channel} onChange={(e) => setChannel(e.target.value)}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black">
-                            <option value="" disabled>Select a channel...</option>
-                            <option value="mcom">mcom</option>
-                            <option value="bcom">bcom</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label htmlFor="device" className="block text-sm font-medium text-gray-700 mb-2">
-                            Device <span className="text-red-500">*</span>
-                        </label>
-                        <select id="device" value={device} onChange={(e) => setDevice(e.target.value)}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black">
-                            <option value="" disabled>Select a device...</option>
-                            <option value="Desktop">Desktop</option>
-                            <option value="MEW">MEW</option>
-                            <option value="TAB">TAB</option>
-                        </select>
-                    </div>
-                </>
-            )}
-        </div>
-    )}
-
-
-      {error && <div className="p-4 bg-red-100 text-red-800 rounded-lg text-sm">{error}</div>}
-      {success && <div className="p-4 bg-green-100 text-green-800 rounded-lg text-sm">{success}</div>}
-      {evaluationResult && (
-        <div className={`p-4 rounded-lg text-sm ${evaluationResult.status === 'success' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
-            {evaluationResult.message}
         </div>
       )}
       
-      <button type="submit" disabled={loading || !workflow || evaluating}
-        className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white font-bold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center">
-        {loading ? 'Processing & Uploading...' : 'Upload to Xray'}
-      </button>
+      {error && <div className="p-4 bg-red-100 text-red-800 rounded-lg text-sm">{error}</div>}
+      {success && <div className="p-4 bg-green-100 text-green-800 rounded-lg text-sm">{success}</div>}
+      
+      {/* Final Submit Area */}
+      <div className="space-y-4 pt-4 border-t">
+        {loading && (
+            <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                <div className="bg-indigo-600 h-2.5 rounded-full animate-pulse" style={{width: '100%'}}></div>
+            </div>
+        )}
+
+        <button type="submit" disabled={loading || evaluating || !file || !actionType}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white font-bold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center">
+            {loading ? 'Processing...' : 'Submit'}
+        </button>
+      </div>
     </form>
   );
 }

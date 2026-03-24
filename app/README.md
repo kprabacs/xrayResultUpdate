@@ -16,20 +16,64 @@ A React 19 + Next.js web application that processes Cucumber test report JSON fi
   - Test execution duration in human-readable format
 - 🎨 **Modern UI**: Built with Tailwind CSS with responsive design
 - ✅ **TypeScript**: Full type safety for reliability
+- 💾 **Database Integration**: Saves test run summaries and detailed test case results to a PostgreSQL database.
+
+### API Endpoint: `/api/save-report` (Single)
+
+A `POST` endpoint to parse and save a single `cucumber_report.json` file to the database.
+
+**Request:** `multipart/form-data`
+- `file`: The `cucumber_report.json` file.
+- `releaseName`: The name of the release (e.g., "v1.2.0").
+- `module`: The name of the module (e.g., "Authentication").
+- `channel`: The channel of execution (e.g., "CI", "Local").
+- `device`: The device used for testing (e.g., "Chrome Desktop").
+
+### API Endpoint: `/api/save-bulk-report` (Bulk)
+
+A `POST` endpoint to parse and save a ZIP archive containing multiple cucumber reports.
+
+**Request:** `multipart/form-data`
+- `file`: The `.zip` archive.
+- `releaseName`: The name of the release that applies to all reports in the ZIP.
+
+**Filename Convention for Bulk Upload:**
+For the bulk upload to work correctly, the JSON files inside the ZIP archive **must** follow this naming convention:
+`ModuleName-Channel-Device.json`
+
+**Examples:**
+- `Checkout-bcom-Desktop.json`
+- `Authentication-mcom-MEW.json`
+- `Wishlist-bcom-TAB.json`
+
+The endpoint will unpack the ZIP file, and for each entry that matches the convention, it will parse the report and save it to the database with the corresponding metadata from the filename. Files that do not match the convention will be skipped.
+
+**Database Setup:**
+- A `docker-compose.yml` file is included to easily spin up a local PostgreSQL database.
+- See `DB_SETUP.md` for instructions.
+- Prisma is used as the ORM. The schema can be found in `prisma/schema.prisma`.
+
 
 ## Project Structure
-
 ```
 app/
+├── prisma/                 # Prisma schema and migrations
+│   ├── schema.prisma
+│   └── migrations/
 ├── src/
 │   ├── app/
+│   │   ├── api/
+│   │   │   ├── save-report/      # Endpoint for single reports
+│   │   │   ├── save-bulk-report/ # New endpoint for bulk reports
+│   │   │   │   └── route.ts
 │   │   ├── layout.tsx          # Root layout
 │   │   ├── page.tsx            # Main page component
 │   │   └── globals.css         # Global styles
 │   ├── components/
 │   │   └── CucumberUploadForm.tsx  # Main form component
 │   └── utils/
-│       └── reportProcessor.ts  # Cucumber processing logic
+│       ├── reportProcessor.ts  # Cucumber processing logic
+│       └── cucumberReportParser.ts # New parser for DB
 ├── package.json
 ├── tsconfig.json
 ├── next.config.ts
@@ -41,6 +85,7 @@ app/
 - **Framework**: Next.js 16.1.6 with React 19.2.3
 - **Language**: TypeScript 5+
 - **Styling**: Tailwind CSS 4
+- **Database**: PostgreSQL with Prisma ORM
 - **Excel Generation**: xlsx 0.18.5
 - **Node.js**: 18+ recommended
 
@@ -51,30 +96,44 @@ app/
 cd app
 ```
 
-2. Install dependencies:
+2. Start the database (requires Docker):
+```bash
+docker-compose up -d
+```
+
+3. Run the database migrations:
+```bash
+npx prisma migrate dev
+```
+
+4. Install dependencies:
 ```bash
 npm install
 ```
 
-3. Start the development server:
+5. Start the development server:
 ```bash
 npm run dev
 ```
 
-4. Open your browser and navigate to:
+6. Open your browser and navigate to:
 ```
 http://localhost:3000
 ```
 
 ## Usage
 
-1. **Upload File**: Drag and drop or click to select your `cucumber_report.json` file
-2. **Fill Required Fields**:
-   - Enter the Release version (e.g., `v1.0.0`, `Release-2024-01`)
-   - Enter the Module name (e.g., `Authentication`, `Payment`, `Dashboard`)
-3. **Optional Field**: Add a Report Link if available
-4. **Generate**: Click "Generate Excel Report" button
-5. **Download**: The Excel file will automatically download as `cucumber_report_[timestamp].xlsx`
+The user interface provides a step-by-step process to upload and process your test reports.
+
+1.  **Step 1: Select Report Type**: Choose "Cucumber result json" for database and Xray operations, or "XRay formater json" for Xray-specific uploads.
+2.  **Step 2: Select Workflow**: Based on your report type, choose the appropriate workflow (e.g., "Single Cucumber Upload" for one file, or "Bulk Cucumber Upload (ZIP)" for multiple files in a zip archive).
+3.  **Step 3: Type of WorkFlow**: This crucial step defines what action you want to perform. The options will change based on your previous selections.
+    *   `Save to Database`: Only saves the report(s) to the database.
+    *   `Update result to Xray`: Only uploads the result(s) to Xray.
+    *   `Save to Database and Update result to Xray`: Performs both actions.
+4.  **Step 4: Upload File**: Upload the corresponding `.json` or `.zip` file.
+5.  **Step 5: Fill Details**: Based on your selections in the previous steps, sections for "Report Metadata" (for database saving) and "Xray Details" will appear. Fill in the required information.
+6.  **Submit**: Click the "Submit" button to begin the process. A progress bar will appear while the actions are being executed.
 
 ## Cucumber JSON Format
 

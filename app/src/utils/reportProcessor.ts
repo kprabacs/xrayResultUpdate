@@ -146,8 +146,9 @@ function calculateSummary(data: CucumberFeature[]): TestSummary {
     let totalTests = 0;
     let passed = 0;
     let failed = 0;
-    let pending = 0;
-    let skipped = 0;
+    const pending = 0;
+    const skipped = 0;
+
     let totalDurationNs = 0;
     let p1 = 0;
     let p2 = 0;
@@ -426,15 +427,26 @@ export async function processBulkCucumberReportV2(
     const skippedFiles: string[] = [];
 
     for (const jsonFile of jsonFiles) {
-        const fileNameWithoutExt = jsonFile.name.toLowerCase().replace('.json', '');
-        const parts = fileNameWithoutExt.split('_');
+        const fileNameWithoutExt = jsonFile.name.toLowerCase().split('/').pop()?.replace('.json', '') || "";
+        
+        let channel = "";
+        let moduleName = "";
+        let device = "";
 
-        if (parts.length < 3) {
-            skippedFiles.push(jsonFile.name);
-            continue;
+        // Try underscore format (channel_module_device) - matching your ZIP
+        const underscoreParts = fileNameWithoutExt.split('_');
+        if (underscoreParts.length === 3) {
+            [channel, moduleName, device] = underscoreParts;
+        } else {
+            // Try hyphen format (module-channel-device)
+            const hyphenParts = fileNameWithoutExt.split('-');
+            if (hyphenParts.length === 3) {
+                [moduleName, channel, device] = hyphenParts;
+            } else {
+                skippedFiles.push(jsonFile.name);
+                continue;
+            }
         }
-
-        const [channel, module, device] = parts;
 
         const fileContent = await jsonFile.async('string');
         const cucumberData = JSON.parse(fileContent) as CucumberFeature[];
@@ -445,7 +457,7 @@ export async function processBulkCucumberReportV2(
         
         summaryData.push([
             release,
-            module,
+            moduleName,
             channel,
             device,
             summary.totalTests,
