@@ -436,34 +436,34 @@ export default function XrayUploadForm() {
         </div>
       </div>
 
-      {/* Step 2: Cucumber Workflow */}
-      {jsonType === 'cucumber' && (
-        <div>
-            <label htmlFor="cucumber-workflow" className="block text-sm font-medium text-gray-700 mb-2">Step 2: Select Cucumber Workflow</label>
-            <select id="cucumber-workflow" value={workflow} onChange={(e) => handleWorkflowChange(e.target.value as Workflow)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black">
-                <option value="" disabled>Select a workflow...</option>
-                <option value="single-cucumber">Single Cucumber Upload</option>
-                <option value="bulk-cucumber">Bulk Cucumber Upload (ZIP)</option>
-            </select>
-        </div>
-      )}
+      {/* Step 2 & 3: Workflow Selection (Parallel) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Step 2: Workflow Selection */}
+        {jsonType === 'cucumber' && (
+            <div>
+                <label htmlFor="cucumber-workflow" className="block text-sm font-medium text-gray-700 mb-2">Step 2: Select Cucumber Workflow</label>
+                <select id="cucumber-workflow" value={workflow} onChange={(e) => handleWorkflowChange(e.target.value as Workflow)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black">
+                    <option value="" disabled>Select a workflow...</option>
+                    <option value="single-cucumber">Single Cucumber Upload</option>
+                    <option value="bulk-cucumber">Bulk Cucumber Upload (ZIP)</option>
+                </select>
+            </div>
+        )}
 
-      {/* Step 2: Xray Workflow */}
-      {jsonType === 'xray' && (
-        <div>
-            <label htmlFor="xray-workflow" className="block text-sm font-medium text-gray-700 mb-2">Step 2: Select Xray Workflow</label>
-            <select id="xray-workflow" value={workflow} onChange={(e) => handleWorkflowChange(e.target.value as Workflow)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black">
-                <option value="" disabled>Select a workflow...</option>
-                <option value="single-xray">Single Xray Upload</option>
-                <option value="bulk-xray">Bulk Xray Upload (ZIP)</option>
-            </select>
-        </div>
-      )}
+        {jsonType === 'xray' && (
+            <div>
+                <label htmlFor="xray-workflow" className="block text-sm font-medium text-gray-700 mb-2">Step 2: Select Xray Workflow</label>
+                <select id="xray-workflow" value={workflow} onChange={(e) => handleWorkflowChange(e.target.value as Workflow)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-black">
+                    <option value="" disabled>Select a workflow...</option>
+                    <option value="single-xray">Single Xray Upload</option>
+                    <option value="bulk-xray">Bulk Xray Upload (ZIP)</option>
+                </select>
+            </div>
+        )}
 
-      {/* Step 3: Action Type */}
-      {workflow && (
+        {/* Step 3: Action Type (Always Visible) */}
         <div>
             <label htmlFor="actionType" className="block text-sm font-medium text-gray-700 mb-2">Step 3: Type of WorkFlow <span className="text-red-500">*</span></label>
             <select id="actionType" value={actionType} onChange={(e) => setActionType(e.target.value as ActionType)}
@@ -474,7 +474,7 @@ export default function XrayUploadForm() {
                 {jsonType === 'cucumber' && <option value="both">Save to Database and Update result to Xray</option>}
             </select>
         </div>
-      )}
+      </div>
 
       {/* File Upload */}
       <div>

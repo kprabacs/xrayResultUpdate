@@ -1,13 +1,18 @@
 import { NextResponse, NextRequest } from 'next/server';
 import prisma from '@/lib/prisma';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
     try {
+        const { searchParams } = new URL(request.url);
+        const skip = parseInt(searchParams.get('skip') || '0', 10);
+        const take = parseInt(searchParams.get('take') || '50', 10);
+
         const runs = await prisma.testRunSummary.findMany({
             orderBy: {
                 createdAt: 'desc'
             },
-            take: 50 // Limit to last 50 runs for performance
+            skip: skip,
+            take: take
         });
 
         return NextResponse.json(runs);
@@ -25,7 +30,6 @@ export async function DELETE(request: NextRequest) {
             return NextResponse.json({ error: 'No IDs provided for deletion' }, { status: 400 });
         }
 
-        // Deleting the summaries will cascade delete TestCaseResults
         await prisma.testRunSummary.deleteMany({
             where: {
                 id: { in: ids.map(id => parseInt(id, 10)) }
