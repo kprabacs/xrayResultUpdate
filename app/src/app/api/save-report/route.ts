@@ -1,9 +1,16 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { parseCucumberReport } from '@/utils/cucumberReportParser';
+import { analyzeRca } from '@/utils/rcaAnalyzer';
 import crypto from 'crypto';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
 
 export async function POST(request: Request) {
+    let tempFilePath: string | null = null;
+    let tempDir: string | null = null;
+
     try {
         if (!process.env.DATABASE_URL) {
             return NextResponse.json({ 
@@ -41,6 +48,21 @@ export async function POST(request: Request) {
             }, { status: 409 });
         }
 
+        // --- NEW: RCA Analysis Step ---
+        // Save to temp file for the Python script
+        tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rca-'));
+        tempFilePath = path.join(tempDir, 'report.json');
+        await fs.writeFile(tempFilePath, reportContent);
+        
+        const rcaResult = await analyzeRca(tempFilePath);
+        // Create a map for quick lookup: scenarioName -> category
+        const rcaMap = new Map<string, string>();
+        if (rcaResult) {
+            rcaResult.failures.forEach(f => {
+                rcaMap.set(f.scenario, f.rca_category);
+            });
+        }
+
         const reportJson = JSON.parse(reportContent);
         const { summary, testCases, skippedCount } = parseCucumberReport(reportJson);
 
@@ -63,6 +85,7 @@ export async function POST(request: Request) {
                 releaseName,
                 runAttempt,
                 testRunSummaryId: testRunSummary.id,
+                rcaCategory: tc.status === 'failed' ? (rcaMap.get(tc.testCaseName) || 'Custom Error') : null
             }));
 
             await tx.testCaseResult.createMany({
@@ -116,5 +139,14 @@ export async function POST(request: Request) {
         return NextResponse.json({ 
             error: `Backend error: ${error instanceof Error ? error.message : 'Unknown error'}`
         }, { status: 500 });
+    } finally {
+        // Cleanup temp files
+        if (tempDir) {
+            try {
+                await fs.rm(tempDir, { recursive: true, force: true });
+            } catch (e) {
+                console.error('Failed to cleanup temp dir:', e);
+            }
+        }
     }
 }

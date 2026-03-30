@@ -40,6 +40,12 @@ model TestCaseResult {
   duration         Float
   errorMessage     String?  @db.Text
   stackTrace       String?  @db.Text
+  
+  // New RCA Fields
+  rcaCategory      String?
+  rcaNote          String?  @db.Text
+  rcaStatus        String?  @default("Auto-Detected")
+  
   createdAt        DateTime @default(now())
   
   TestRunSummary   TestRunSummary @relation(fields: [testRunSummaryId], references: [id], onDelete: Cascade)

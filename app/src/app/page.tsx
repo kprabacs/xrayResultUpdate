@@ -15,11 +15,17 @@ import {
     Layers,
     Filter,
     AlertCircle,
+    AlertTriangle,
     CheckCircle,
     Download,
+    Bot,
+    UserCheck,
     ArrowUpRight,
     ArrowDownRight,
     Minus,
+    Edit3,
+    Save,
+    MessageSquare,
     X,
     Dna,
     Activity
@@ -755,12 +761,490 @@ const ModuleAnalysisView = () => {
     );
 };
 
+const RcaManagerView = () => {
+    const [failures, setFailures] = useState<any[]>([]);
+    const [debugInfo, setDebugInfo] = useState<any | null>(null);
+    const [isFallbackResults, setIsFallbackResults] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [isMetaLoading, setIsMetaLoading] = useState(true);
+    const [editingFailure, setEditingFailure] = useState<any | null>(null);
+    const [updating, setUpdating] = useState(false);
+
+    // Filters
+    const [selectedApp, setSelectedApp] = useState<string>('');
+    const [selectedRelease, setSelectedRelease] = useState<string>('');
+    const [selectedDevice, setSelectedDevice] = useState<string>('');
+    const [selectedModule, setSelectedModule] = useState<string>('');
+    const [isSubmitted, setIsSubmitted] = useState(false);
+
+    // Persistent Metadata for Filters
+    const [allMetadata, setAllMetadata] = useState<{
+        apps: string[],
+        releases: string[],
+        devices: string[],
+        modules: string[]
+    }>({ apps: [], releases: [], devices: [], modules: [] });
+
+    // Cascading Handlers
+    const handleAppChange = (val: string) => {
+        setSelectedApp(val);
+        setSelectedRelease('');
+        setSelectedDevice('');
+        setSelectedModule('');
+        setIsSubmitted(false);
+    };
+
+    const handleReleaseChange = (val: string) => {
+        setSelectedRelease(val);
+        setSelectedDevice('');
+        setSelectedModule('');
+        setIsSubmitted(false);
+    };
+
+    const handleDeviceChange = (val: string) => {
+        setSelectedDevice(val);
+        setSelectedModule('');
+        setIsSubmitted(false);
+    };
+
+    const handleModuleChange = (val: string) => {
+        setSelectedModule(val);
+        setIsSubmitted(false);
+    };
+
+    const categories = [
+        'Comparision Failed', 'Validation Failed', 'Code Error', 'Locator Not Found', 
+        'Logic Issue', 'DDSE - Given Element Not Found', 'Browser intermittently closed',
+        'MEW/TAB compatability issue', 'Locator Frame Issue', 'API Failure (HTML Response)',
+        'Validation Issue', 'Custom Error', 'Unknown'
+    ];
+
+    const statuses = ['Auto-Detected', 'Manual Review Required', 'Verified', 'Fix Planned', 'Env Issue'];
+
+    const fetchMetadata = async () => {
+        setIsMetaLoading(true);
+        try {
+            const response = await fetch('/api/rca/filters');
+            const data = await response.json();
+            setAllMetadata(data);
+        } catch (err) { 
+            console.error('Failed to fetch filter metadata', err); 
+        } finally {
+            setIsMetaLoading(false);
+        }
+    };
+
+    const fetchFailures = async () => {
+        if (!selectedApp || !selectedRelease || !selectedDevice || !selectedModule) return;
+        
+        setLoading(true);
+        try {
+            const params = new URLSearchParams();
+            params.append('app', selectedApp);
+            params.append('release', selectedRelease);
+            params.append('device', selectedDevice);
+            params.append('module', selectedModule);
+
+            const response = await fetch(`/api/rca/failures?${params.toString()}`);
+            const result = await response.json();
+            
+            setFailures(result.failures || []);
+            setIsSubmitted(true);
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchMetadata();
+    }, []);
+
+    // Background Auto-Sync: Triggered whenever metadata is loaded or filters change
+    // Ensures "Unknowns" are backfilled without manual button clicks
+    useEffect(() => {
+        const autoSync = async () => {
+            if (isMetaLoading) return;
+            try {
+                const response = await fetch('/api/admin/rebuild-rca');
+                const result = await response.json();
+                if (result.count > 0) {
+                    console.log(`Auto-Sync: Backfilled ${result.count} historical failures.`);
+                    if (isSubmitted) fetchFailures(); // Refresh if currently viewing results
+                }
+            } catch (err) { /* Silent fail for background tasks */ }
+        };
+        autoSync();
+    }, [isMetaLoading]);
+
+    // Effect removed - fetching is now manual
+
+    const handleUpdate = async (id: number, payload: any) => {
+        setUpdating(true);
+        try {
+            const response = await fetch('/api/rca/update', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id, ...payload })
+            });
+            if (response.ok) {
+                setFailures(failures.map(f => f.id === id ? { ...f, ...payload } : f));
+                setEditingFailure(null);
+            }
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setUpdating(false);
+        }
+    };
+
+    const getCategoryColor = (cat: string) => {
+        const c = cat ? cat.toLowerCase() : '';
+        if (c.includes('code')) return 'bg-red-100 text-red-700 border-red-200';
+        if (c.includes('locator')) return 'bg-amber-100 text-amber-700 border-amber-200';
+        if (c.includes('logic')) return 'bg-pink-100 text-pink-700 border-pink-200';
+        if (c.includes('validation')) return 'bg-emerald-100 text-emerald-700 border-emerald-200';
+        if (c.includes('browser')) return 'bg-blue-100 text-blue-700 border-blue-200';
+        return 'bg-gray-100 text-gray-700 border-gray-200';
+    };
+
+    const clearFilters = () => {
+        setSelectedApp('');
+        setSelectedRelease('');
+        setSelectedDevice('');
+        setSelectedModule('');
+        setIsSubmitted(false);
+    };
+
+    // Dynamic filtering of options based on previous steps
+    const dynamicOptions = {
+        apps: allMetadata.apps,
+        releases: selectedApp 
+            ? Array.from(new Set(allMetadata.combinations.filter(c => c.app === selectedApp).map(c => c.release))).sort()
+            : [],
+        devices: selectedRelease 
+            ? Array.from(new Set(allMetadata.combinations.filter(c => c.app === selectedApp && c.release === selectedRelease).map(c => c.device))).sort()
+            : [],
+        modules: selectedDevice 
+            ? Array.from(new Set(allMetadata.combinations.filter(c => c.app === selectedApp && c.release === selectedRelease && c.device === selectedDevice).map(c => c.module))).sort()
+            : []
+    };
+
+    const isFilterComplete = [selectedApp, selectedRelease, selectedDevice, selectedModule].every(v => v && v.trim() !== "");
+
+    if (isMetaLoading && !allMetadata.apps.length) return <div className="flex justify-center p-20"><RefreshCcw className="animate-spin text-indigo-600" size={40} /></div>;
+
+    const categoryStats = failures.reduce((acc: any, f) => {
+        const cat = f.rcaCategory || 'Unknown';
+        acc[cat] = (acc[cat] || 0) + 1;
+        return acc;
+    }, {});
+
+    const downloadRcaReport = () => {
+        if (failures.length === 0) return;
+        const exportData = failures.map(f => ({
+            'Scenario Name': f.testCaseName,
+            'Test ID': f.testCaseId,
+            'Release': f.releaseName,
+            'Application': f.TestRunSummary?.channel,
+            'Device': f.TestRunSummary?.device,
+            'Module': f.TestRunSummary?.module,
+            'Step Failed': f.step,
+            'Detected RCA': f.rcaCategory,
+            'Verification Status': f.rcaStatus,
+            'Analysis Notes': f.rcaNote || '',
+            'Error Message': f.errorMessage
+        }));
+
+        const ws = XLSX.utils.json_to_sheet(exportData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "RCA Report");
+        XLSX.writeFile(wb, `RCA_Report_${selectedApp}_${selectedRelease}.xlsx`);
+    };
+
+    return (
+        <div className="space-y-8 animate-in fade-in duration-500">
+            {/* Header & Guided Filters */}
+            <div className="flex flex-col space-y-6">
+                <div className="bg-white p-8 rounded-[40px] border border-gray-100 shadow-sm space-y-8">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-4">
+                            <div className="bg-rose-600 p-3 rounded-2xl shadow-lg shadow-rose-100 text-white">
+                                <AlertTriangle size={24} />
+                            </div>
+                            <div>
+                                <h3 className="text-xl font-black text-gray-900 uppercase tracking-tighter">Failure RCA Manager</h3>
+                                <p className="text-xs font-bold text-gray-400 uppercase tracking-widest italic">Follow the steps to isolate execution failures</p>
+                            </div>
+                        </div>
+                        <div className="flex items-center space-x-3">
+                            {isSubmitted && failures.length > 0 && (
+                                <button onClick={downloadRcaReport} className="bg-emerald-50 text-emerald-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-100 transition-all flex items-center border border-emerald-100 shadow-sm">
+                                    <Download size={14} className="mr-1.5" /> Export Report
+                                </button>
+                            )}
+                            {(selectedApp || selectedRelease || selectedDevice || selectedModule) && (
+                                <button onClick={clearFilters} className="bg-rose-50 text-rose-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-rose-100 transition-all flex items-center">
+                                    <RefreshCcw size={14} className="mr-1.5" /> Reset Workflow
+                                </button>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 items-end">
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1 flex items-center"><span className="w-4 h-4 rounded-full bg-gray-100 flex items-center justify-center mr-1 text-[8px] text-gray-500">1</span> Application</label>
+                            <select value={selectedApp} onChange={(e) => handleAppChange(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3.5 text-xs font-black text-gray-900 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all">
+                                <option value="">Select App</option>
+                                {dynamicOptions.apps.map((app: string) => <option key={app} value={app}>{app.toUpperCase()}</option>)}
+                            </select>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1 flex items-center"><span className={`w-4 h-4 rounded-full ${selectedApp ? 'bg-indigo-100 text-indigo-600' : 'bg-gray-50 text-gray-300'} flex items-center justify-center mr-1 text-[8px]`}>2</span> Release</label>
+                            <select disabled={!selectedApp} value={selectedRelease} onChange={(e) => handleReleaseChange(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3.5 text-xs font-black text-gray-900 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all disabled:opacity-40">
+                                <option value="">Select Release</option>
+                                {dynamicOptions.releases.map((rel: string) => <option key={rel} value={rel}>{rel}</option>)}
+                            </select>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1 flex items-center"><span className={`w-4 h-4 rounded-full ${selectedRelease ? 'bg-indigo-100 text-indigo-600' : 'bg-gray-50 text-gray-300'} flex items-center justify-center mr-1 text-[8px]`}>3</span> Device</label>
+                            <select disabled={!selectedRelease} value={selectedDevice} onChange={(e) => handleDeviceChange(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3.5 text-xs font-black text-gray-900 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all disabled:opacity-40">
+                                <option value="">Select Device</option>
+                                {dynamicOptions.devices.map((dev: string) => <option key={dev} value={dev}>{dev.toUpperCase()}</option>)}
+                            </select>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1 flex items-center"><span className={`w-4 h-4 rounded-full ${selectedDevice ? 'bg-indigo-100 text-indigo-600' : 'bg-gray-50 text-gray-300'} flex items-center justify-center mr-1 text-[8px]`}>4</span> Module</label>
+                            <select disabled={!selectedDevice} value={selectedModule} onChange={(e) => handleModuleChange(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3.5 text-xs font-black text-gray-900 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all disabled:opacity-40">
+                                <option value="">Select Module</option>
+                                {dynamicOptions.modules.map((mod: string) => <option key={mod} value={mod}>{mod.toUpperCase()}</option>)}
+                            </select>
+                        </div>
+                        <div className="pb-0.5">
+                            <button 
+                                onClick={fetchFailures} 
+                                disabled={!isFilterComplete || loading} 
+                                className="w-full bg-indigo-600 text-white py-4 rounded-[20px] font-black text-[10px] tracking-widest uppercase shadow-xl shadow-indigo-200 hover:bg-indigo-700 disabled:bg-gray-200 disabled:shadow-none transition-all flex items-center justify-center space-x-2"
+                            >
+                                {loading ? <RefreshCcw size={14} className="animate-spin" /> : <Activity size={14} />}
+                                <span>Generate RCA</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                {!isSubmitted ? (
+                    <div className="py-32 flex flex-col items-center justify-center text-center space-y-6 bg-white rounded-[40px] border border-gray-100 shadow-xl shadow-gray-200/50">
+                        <div className="bg-gray-50 p-12 rounded-full">
+                            <Filter size={64} className="text-gray-200" />
+                        </div>
+                        <div className="space-y-2">
+                            <h4 className="text-2xl font-black text-gray-900 uppercase tracking-tighter">Analysis Engine Ready</h4>
+                            <p className="text-gray-400 font-bold text-xs uppercase tracking-widest max-w-sm mx-auto leading-relaxed">
+                                Select your project parameters above to begin deep-dive Root Cause Analysis.
+                            </p>
+                        </div>
+                    </div>
+                ) : (
+                    <>
+                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                            <div className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                                <p className="text-[10px] font-black text-gray-400 uppercase mb-1">Total Failures</p>
+                                <h4 className="text-2xl font-black text-gray-900">{failures.length}</h4>
+                            </div>
+                            {Object.entries(categoryStats).slice(0, 5).map(([cat, count]: any) => (
+                                <div key={cat} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                                    <p className="text-[10px] font-black text-gray-400 uppercase mb-1 truncate">{cat}</p>
+                                    <h4 className="text-2xl font-black text-gray-900">{count}</h4>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* Table */}
+                        <div className="bg-white rounded-[40px] border border-gray-100 shadow-2xl overflow-hidden">
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left">
+                                    <thead className="bg-gray-50 text-[10px] text-gray-400 uppercase font-black tracking-widest border-b border-gray-100">
+                                        <tr>
+                                            <th className="py-6 px-8">Scenario / ID</th>
+                                            <th className="py-6 px-8">Release / App</th>
+                                            <th className="py-6 px-8 text-center">Detected RCA</th>
+                                            <th className="py-6 px-8 text-center">Status</th>
+                                            <th className="py-6 px-8 text-right">Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="text-sm divide-y divide-gray-50">
+                                        {failures.length === 0 ? (
+                                            <tr>
+                                                <td colSpan={5} className="py-24 text-center">
+                                                    <div className="flex flex-col items-center space-y-4">
+                                                        <div className="bg-amber-50 p-6 rounded-full">
+                                                            <AlertTriangle size={48} className="text-amber-500" />
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                            <h4 className="text-xl font-black text-gray-900 uppercase tracking-tighter">Analysis Mismatch</h4>
+                                                            <p className="text-gray-400 font-bold text-xs uppercase tracking-widest max-w-sm mx-auto leading-relaxed">
+                                                                We found zero results for this specific combination.
+                                                            </p>
+                                                        </div>
+                                                        {debugInfo && (
+                                                            <div className="bg-gray-50 border border-gray-100 p-6 rounded-3xl grid grid-cols-2 gap-4 text-left w-full max-w-md">
+                                                                <div className="space-y-1">
+                                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Total Failed in DB</p>
+                                                                    <p className="text-sm font-black text-gray-900">{debugInfo.totalFailed}</p>
+                                                                </div>
+                                                                <div className="space-y-1">
+                                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">App Match</p>
+                                                                    <p className="text-sm font-black text-indigo-600">{debugInfo.appOnly}</p>
+                                                                </div>
+                                                                <div className="space-y-1">
+                                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Release Match</p>
+                                                                    <p className="text-sm font-black text-indigo-600">{debugInfo.releaseOnly}</p>
+                                                                </div>
+                                                                <div className="space-y-1">
+                                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Module Match</p>
+                                                                    <p className="text-sm font-black text-indigo-600">{debugInfo.moduleOnly}</p>
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        ) : failures.map((f) => (
+                                            <tr key={f.id} className="hover:bg-gray-50/50 transition-colors group">
+                                                <td className="py-6 px-8">
+                                                    <div className="font-black text-gray-900 text-sm group-hover:text-indigo-600 transition-colors capitalize line-clamp-1">{f.testCaseName}</div>
+                                                    <div className="text-[10px] font-bold text-gray-400 uppercase mt-1">{f.testCaseId}</div>
+                                                </td>
+                                                <td className="py-6 px-8">
+                                                    <div className="font-bold text-gray-700 text-xs">{f.releaseName}</div>
+                                                    <div className="text-[10px] font-black text-indigo-600 uppercase tracking-tighter mt-1">{f.TestRunSummary?.channel}</div>
+                                                </td>
+                                                <td className="py-6 px-8 text-center">
+                                                    <div className="flex flex-col items-center space-y-1">
+                                                        <span className={`px-4 py-1.5 rounded-xl text-[10px] font-black uppercase border whitespace-nowrap flex items-center ${getCategoryColor(f.rcaCategory)}`}>
+                                                            {f.rcaStatus === 'Verified' || f.rcaStatus === 'Fix Planned' ? (
+                                                                <UserCheck size={12} className="mr-1.5" />
+                                                            ) : (
+                                                                <Bot size={12} className="mr-1.5" />
+                                                            )}
+                                                            {f.rcaCategory || 'Unknown'}
+                                                        </span>
+                                                        <span className="text-[8px] font-bold text-gray-400 uppercase tracking-tighter">
+                                                            {f.rcaStatus === 'Verified' || f.rcaStatus === 'Fix Planned' ? 'Human Verified' : 'AI Predicted'}
+                                                        </span>
+                                                    </div>
+                                                </td>
+
+                                                <td className="py-6 px-8 text-center">
+                                                    <span className={`inline-flex items-center text-[10px] font-black uppercase ${f.rcaStatus === 'Verified' ? 'text-emerald-600' : 'text-gray-400'}`}>
+                                                        {f.rcaStatus === 'Verified' ? <CheckCircle size={14} className="mr-1.5" /> : <Activity size={14} className="mr-1.5" />}
+                                                        {f.rcaStatus || 'Auto-Detected'}
+                                                    </span>
+                                                </td>
+                                                <td className="py-6 px-8 text-right">
+                                                    <button onClick={() => setEditingFailure({...f})} className="p-3 bg-gray-50 hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 rounded-2xl transition-all shadow-sm border border-gray-100">
+                                                        <Edit3 size={20} />
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </>
+                )}
+            </div>
+
+            {/* Edit Modal */}
+            {editingFailure && (
+                <div className="fixed inset-0 z-[10001] flex items-center justify-center p-6 lg:p-12 animate-in fade-in duration-300">
+                    <div className="absolute inset-0 bg-gray-900/80 backdrop-blur-md" onClick={() => setEditingFailure(null)}></div>
+                    <div className="relative bg-white w-full max-w-4xl rounded-[40px] shadow-2xl overflow-hidden flex flex-col border border-white/20">
+                        <div className="p-8 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+                            <div className="flex items-center space-x-4">
+                                <div className="bg-indigo-600 p-3 rounded-2xl shadow-lg shadow-indigo-200 text-white"><MessageSquare size={24} /></div>
+                                <div>
+                                    <h2 className="text-2xl font-black text-gray-900 uppercase tracking-tighter">Root Cause Analysis</h2>
+                                    <p className="text-xs font-bold text-gray-400 uppercase tracking-widest truncate max-w-md">{editingFailure.testCaseName}</p>
+                                </div>
+                            </div>
+                            <button onClick={() => setEditingFailure(null)} className="bg-white p-3 rounded-2xl border-2 border-gray-100 text-gray-400 hover:text-red-600 hover:border-red-50 transition-all shadow-sm"><X size={24} /></button>
+                        </div>
+                        <div className="p-8 space-y-6 overflow-y-auto max-h-[70vh]">
+                            {/* Error Info */}
+                            <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100">
+                                <p className="text-[10px] font-black text-rose-400 uppercase tracking-widest mb-2">Error Message</p>
+                                <pre className="text-rose-900 text-[11px] font-mono whitespace-pre-wrap break-words bg-white/50 p-4 rounded-xl border border-rose-100 max-h-48 overflow-y-auto shadow-inner">
+                                    {editingFailure.errorMessage}
+                                </pre>
+                            </div>
+
+                            {/* Form */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1">RCA Category</label>
+                                    <select 
+                                        value={editingFailure.rcaCategory || 'Unknown'} 
+                                        onChange={(e) => setEditingFailure({...editingFailure, rcaCategory: e.target.value})}
+                                        className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-5 py-3 text-sm font-black text-gray-900 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all"
+                                    >
+                                        {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                                    </select>
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1">Verification Status</label>
+                                    <select 
+                                        value={editingFailure.rcaStatus || 'Auto-Detected'} 
+                                        onChange={(e) => setEditingFailure({...editingFailure, rcaStatus: e.target.value})}
+                                        className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-5 py-3 text-sm font-black text-gray-900 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all"
+                                    >
+                                        {statuses.map(s => <option key={s} value={s}>{s}</option>)}
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1">Analysis Notes</label>
+                                <textarea 
+                                    value={editingFailure.rcaNote || ''} 
+                                    onChange={(e) => setEditingFailure({...editingFailure, rcaNote: e.target.value})}
+                                    rows={4}
+                                    placeholder="Enter findings, fix details or Jira tickets..."
+                                    className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-5 py-4 text-sm font-bold text-gray-900 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all resize-none shadow-inner"
+                                />
+                            </div>
+                        </div>
+                        <div className="p-8 border-t border-gray-100 bg-gray-50/50 flex justify-end">
+                            <button 
+                                onClick={() => handleUpdate(editingFailure.id, { 
+                                    rcaCategory: editingFailure.rcaCategory, 
+                                    rcaNote: editingFailure.rcaNote, 
+                                    rcaStatus: editingFailure.rcaStatus 
+                                })}
+                                disabled={updating}
+                                className="bg-indigo-600 text-white px-10 py-4 rounded-[20px] font-black text-sm shadow-xl shadow-indigo-200 hover:bg-indigo-700 disabled:bg-gray-300 transition-all flex items-center space-x-3"
+                            >
+                                {updating ? <RefreshCcw size={20} className="animate-spin" /> : <Save size={20} />}
+                                <span>SAVE ANALYSIS</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
 interface RunSummary { id: number; releaseName: string; module: string; channel: string; device: string; passCount: number; failCount: number; createdAt: string; }
 
 const HistoryView = () => {
     const [runs, setRuns] = useState<RunSummary[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadingMore, setLoadingMore] = useState(false);
+    const [syncingRca, setSyncingRca] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
     const [hasMore, setHasMore] = useState(true);
 
@@ -773,6 +1257,19 @@ const HistoryView = () => {
             if (isLoadMore) setRuns([...runs, ...data]); else setRuns(data);
             setHasMore(data.length === 50);
         } catch (err) { } finally { setLoading(false); setLoadingMore(false); }
+    };
+
+    const syncRca = async () => {
+        setSyncingRca(true);
+        try {
+            const response = await fetch('/api/admin/rebuild-rca');
+            const data = await response.json();
+            alert(data.message || 'RCA Sync complete.');
+        } catch (err) {
+            alert('Failed to sync RCA data.');
+        } finally {
+            setSyncingRca(false);
+        }
     };
 
     useEffect(() => { fetchHistory(); }, []);
@@ -793,7 +1290,20 @@ const HistoryView = () => {
 
     return (
         <div className="space-y-6">
-            <div className="flex justify-between items-center mb-4"><div className="flex items-center space-x-4"><h3 className="text-xl font-bold text-gray-900">Recent Uploads</h3>{selectedIds.size > 0 && <button onClick={deleteSelected} className="bg-red-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold transition-all"><Trash2 size={14} className="inline mr-2"/>Delete ({selectedIds.size})</button>}</div></div>
+            <div className="flex justify-between items-center mb-4">
+                <div className="flex items-center space-x-4">
+                    <h3 className="text-xl font-bold text-gray-900">Recent Uploads</h3>
+                    {selectedIds.size > 0 && <button onClick={deleteSelected} className="bg-red-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold transition-all"><Trash2 size={14} className="inline mr-2"/>Delete ({selectedIds.size})</button>}
+                </div>
+                <button 
+                    onClick={syncRca} 
+                    disabled={syncingRca}
+                    className="flex items-center space-x-2 bg-indigo-50 text-indigo-600 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-indigo-100 transition-all disabled:opacity-50"
+                >
+                    {syncingRca ? <RefreshCcw size={14} className="animate-spin" /> : <Dna size={14} />}
+                    <span>{syncingRca ? 'Syncing...' : 'Re-Sync RCA History'}</span>
+                </button>
+            </div>
             <div className="overflow-x-auto"><table className="w-full text-left"><thead><tr className="border-b-2 text-gray-900 text-xs uppercase font-bold"><th className="px-4 py-3"><input type="checkbox" checked={selectedIds.size === runs.length && runs.length > 0} onChange={toggleSelectAll}/></th><th className="px-4 py-3">Date</th><th className="px-4 py-3">Release</th><th className="px-4 py-3">Module</th><th className="px-4 py-3">Metadata</th></tr></thead><tbody className="text-sm">{runs.map((run) => (<tr key={run.id} className={`border-b transition-colors ${selectedIds.has(run.id) ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}><td className="px-4 py-4"><input type="checkbox" checked={selectedIds.has(run.id)} onChange={() => toggleSelect(run.id)}/></td><td className="px-4 py-4 font-medium text-gray-900">{new Date(run.createdAt).toLocaleDateString()}<br/><span className="text-xs text-indigo-600">{new Date(run.createdAt).toLocaleTimeString()}</span></td><td className="px-4 py-4 font-bold text-gray-900">{run.releaseName}</td><td className="py-4 px-4"><span className="bg-indigo-100 text-indigo-800 px-2 py-1 rounded text-xs font-bold uppercase">{run.module}</span></td><td className="py-4 px-4"><div className="flex space-x-2"><span className="bg-gray-200 px-2 py-0.5 rounded text-[10px] font-bold">{run.channel}</span><span className="bg-gray-200 px-2 py-0.5 rounded text-[10px] font-bold">{run.device}</span></div></td></tr>))}</tbody></table></div>
             {hasMore && <div className="pt-6 flex justify-center"><button onClick={() => fetchHistory(true)} disabled={loadingMore} className="bg-indigo-50 text-indigo-600 px-8 py-2.5 rounded-xl text-sm font-bold">{loadingMore ? 'Loading...' : 'Load More'}</button></div>}
         </div>
@@ -801,7 +1311,7 @@ const HistoryView = () => {
 };
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'upload' | 'history' | 'analytics' | 'moduleAnalysis'>('upload');
+  const [activeTab, setActiveTab] = useState<'upload' | 'history' | 'analytics' | 'moduleAnalysis' | 'rca'>('upload');
   return (
     <div className="flex h-screen bg-gray-50 font-sans">
       <aside className="w-72 bg-white p-6 shadow-xl flex flex-col justify-between border-r">
@@ -810,12 +1320,13 @@ export default function Home() {
             <NavItem icon={<UploadCloud size={20} />} label="Process Report" active={activeTab === 'upload'} onClick={() => setActiveTab('upload')} />
             <NavItem icon={<BarChart3 size={20} />} label="Analytics Dashboard" active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')} />
             <NavItem icon={<PieIcon size={20} />} label="Module Analysis" active={activeTab === 'moduleAnalysis'} onClick={() => setActiveTab('moduleAnalysis')} />
+            <NavItem icon={<AlertTriangle size={20} />} label="Failure RCA" active={activeTab === 'rca'} onClick={() => setActiveTab('rca')} />
             <NavItem icon={<History size={20} />} label="History Management" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
           </nav>
         </div>
         <div className="text-center text-xs font-bold border-t pt-4 font-sans"><p>&copy; {new Date().getFullYear()} Execution Results</p></div>
       </aside>
-      <main className="flex-1 p-12 overflow-y-auto"><div className="max-w-[95%] mx-auto"><div className="mb-10 text-center lg:text-left"><h2 className="text-4xl font-extrabold text-gray-900 font-sans">{activeTab === 'upload' ? 'Report Processor' : activeTab === 'analytics' ? 'Execution Analytics' : activeTab === 'moduleAnalysis' ? 'Module Deep-Dive' : 'History & Overrides'}</h2><p className="text-gray-700 mt-2 text-lg font-medium font-sans">{activeTab === 'upload' ? 'Sync Cucumber with Jira Xray.' : activeTab === 'analytics' ? 'Visualize test health and trends.' : activeTab === 'moduleAnalysis' ? 'Examine per-module stability and DNA.' : 'Review past uploads.'}</p></div><div className="bg-white p-10 rounded-3xl shadow-xl border border-gray-200">{activeTab === 'upload' ? <XrayUploadForm /> : activeTab === 'analytics' ? <AnalyticsView /> : activeTab === 'moduleAnalysis' ? <ModuleAnalysisView /> : <HistoryView />}</div></div></main>
+      <main className="flex-1 p-12 overflow-y-auto"><div className="max-w-[95%] mx-auto"><div className="mb-10 text-center lg:text-left"><h2 className="text-4xl font-extrabold text-gray-900 font-sans">{activeTab === 'upload' ? 'Report Processor' : activeTab === 'analytics' ? 'Execution Analytics' : activeTab === 'moduleAnalysis' ? 'Module Deep-Dive' : activeTab === 'rca' ? 'Root Cause Analysis' : 'History & Overrides'}</h2><p className="text-gray-700 mt-2 text-lg font-medium font-sans">{activeTab === 'upload' ? 'Sync Cucumber with Jira Xray.' : activeTab === 'analytics' ? 'Visualize test health and trends.' : activeTab === 'moduleAnalysis' ? 'Examine per-module stability and DNA.' : activeTab === 'rca' ? 'Categorize and manage test failures.' : 'Review past uploads.'}</p></div><div className="bg-white p-10 rounded-3xl shadow-xl border border-gray-100">{activeTab === 'upload' ? <XrayUploadForm /> : activeTab === 'analytics' ? <AnalyticsView /> : activeTab === 'moduleAnalysis' ? <ModuleAnalysisView /> : activeTab === 'rca' ? <RcaManagerView /> : <HistoryView />}</div></div></main>
     </div>
   );
 }
