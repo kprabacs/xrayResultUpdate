@@ -64,7 +64,12 @@ export async function POST(request: Request) {
         }
 
         const reportJson = JSON.parse(reportContent);
-        const { summary, testCases, skippedCount } = parseCucumberReport(reportJson);
+        const { summary, testCases, metadata, skippedCount } = parseCucumberReport(reportJson);
+
+        // Use extracted metadata if available, otherwise fallback to form data
+        const finalModuleName = (metadata?.moduleName || moduleName).toLowerCase();
+        const finalChannel = (metadata?.applicationName || channel).toLowerCase();
+        const finalDevice = (metadata?.deviceType || device).toLowerCase();
 
         const result = await prisma.$transaction(async (tx) => {
             // 1. Create Summary
@@ -72,9 +77,9 @@ export async function POST(request: Request) {
                 data: {
                     ...summary,
                     releaseName,
-                    module: moduleName,
-                    channel,
-                    device,
+                    module: finalModuleName,
+                    channel: finalChannel,
+                    device: finalDevice,
                     reportHash,
                 }
             });

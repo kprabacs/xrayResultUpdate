@@ -28,7 +28,8 @@ import {
     MessageSquare,
     X,
     Dna,
-    Activity
+    Activity,
+    RotateCw
 } from 'lucide-react';
 import { 
     BarChart, 
@@ -622,6 +623,26 @@ const ModuleAnalysisView = () => {
             .sort((a, b) => a.release.localeCompare(b.release));
     };
 
+    const downloadFilteredAnalysisExcel = () => {
+        if (filteredModules.length === 0) return;
+        
+        const reportData = filteredModules.map(m => ({
+            'Release': m.release,
+            'Device': m.device.toUpperCase(),
+            'Module': m.module,
+            'Stability': m.isUnstable ? 'UNSTABLE' : 'STABLE',
+            'Total Tests': m.testCount,
+            'Pass Count': m.passCount,
+            'Fail Count': m.failCount,
+            'Pass Rate (%)': `${m.passPct.toFixed(1)}%`
+        }));
+
+        const ws = XLSX.utils.json_to_sheet(reportData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Module Analysis");
+        XLSX.writeFile(wb, `Module_Analysis_${selectedApp}_${submittedRelease || 'all'}.xlsx`);
+    };
+
     return (
         <div className="space-y-12 relative isolate">
             <DnaMatrixModal moduleData={dnaModule} onClose={() => setDnaModule(null)} />
@@ -671,10 +692,21 @@ const ModuleAnalysisView = () => {
             <div className="bg-white p-8 rounded-3xl border border-gray-100 shadow-xl shadow-gray-200/50 relative">
                 <div className="flex flex-col space-y-8 mb-10 pb-10 border-b border-gray-100">
                     <div className="flex items-center justify-between"><div className="flex items-center space-x-3"><div className="bg-indigo-600 p-2 rounded-xl"><Filter className="text-white" size={24} /></div><h3 className="text-2xl font-black text-gray-900">Detailed Module Analysis</h3></div>{submittedRelease && <button onClick={() => { setSubmittedRelease(null); setSelectedModuleRelease('all'); }} className="text-[10px] font-black text-gray-400 hover:text-red-600 uppercase tracking-widest transition-colors">Reset View</button>}</div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-8 items-end">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 items-end">
                         <div className="space-y-3"><span className="text-xs font-black text-gray-400 uppercase tracking-widest flex items-center px-1 font-sans"><RefreshCcw size={14} className="mr-2" /> 1. Select Release</span><div className="relative"><input list="release-options" type="text" placeholder="Search release..." value={selectedModuleRelease === 'all' ? '' : selectedModuleRelease} onChange={(e) => setSelectedModuleRelease(e.target.value === '' ? 'all' : e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-5 py-4 text-sm font-black text-gray-900 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all placeholder:text-gray-400 shadow-inner" /><datalist id="release-options">{moduleReleases.filter(r => r !== 'all').map(rel => (<option key={rel} value={rel} />))}</datalist></div></div>
                         <div className="space-y-3"><span className="text-xs font-black text-gray-400 uppercase tracking-widest flex items-center px-1 font-sans"><Layers size={14} className="mr-2" /> 2. Device Type</span><div className="flex flex-wrap bg-gray-50 p-1.5 rounded-2xl border-2 border-gray-100 shadow-inner">{moduleDevices.map(dev => (<button key={dev} onClick={() => setSelectedModuleDevice(dev)} className={`flex-1 min-w-[80px] px-4 py-3 rounded-xl text-[10px] font-black transition-all uppercase ${selectedModuleDevice === dev ? 'bg-white text-indigo-600 shadow-md border border-gray-100' : 'text-gray-500 hover:text-indigo-500'}`}>{dev}</button>))}</div></div>
-                        <div className="pb-1"><button onClick={() => setSubmittedRelease(selectedModuleRelease)} disabled={selectedModuleRelease === 'all' || selectedModuleRelease === ''} className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black text-sm shadow-xl shadow-indigo-200 hover:bg-indigo-700 disabled:bg-gray-200 transition-all flex items-center justify-center space-x-2"><BarChart3 size={18} /><span>GENERATE ANALYSIS</span></button></div>
+                        <div className="pb-1">
+                            <button onClick={() => setSubmittedRelease(selectedModuleRelease)} disabled={selectedModuleRelease === 'all' || selectedModuleRelease === ''} className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black text-sm shadow-xl shadow-indigo-200 hover:bg-indigo-700 disabled:bg-gray-200 transition-all flex items-center justify-center space-x-2">
+                                <BarChart3 size={18} />
+                                <span>GENERATE ANALYSIS</span>
+                            </button>
+                        </div>
+                        <div className="pb-1">
+                            <button onClick={downloadFilteredAnalysisExcel} disabled={!submittedRelease || filteredModules.length === 0} className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-black text-sm shadow-xl shadow-emerald-200 hover:bg-emerald-700 disabled:bg-gray-200 transition-all flex items-center justify-center space-x-2">
+                                <Download size={18} />
+                                <span>EXPORT TO EXCEL</span>
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -776,6 +808,9 @@ const RcaManagerView = () => {
     const [selectedDevice, setSelectedDevice] = useState<string>('');
     const [selectedModule, setSelectedModule] = useState<string>('');
     const [isSubmitted, setIsSubmitted] = useState(false);
+    
+    // Interactive Category Filter
+    const [filterCategory, setFilterCategory] = useState<string | null>(null);
 
     // Persistent Metadata for Filters
     const [allMetadata, setAllMetadata] = useState<{
@@ -792,6 +827,7 @@ const RcaManagerView = () => {
         setSelectedDevice('');
         setSelectedModule('');
         setIsSubmitted(false);
+        setFilterCategory(null);
     };
 
     const handleReleaseChange = (val: string) => {
@@ -799,17 +835,20 @@ const RcaManagerView = () => {
         setSelectedDevice('');
         setSelectedModule('');
         setIsSubmitted(false);
+        setFilterCategory(null);
     };
 
     const handleDeviceChange = (val: string) => {
         setSelectedDevice(val);
         setSelectedModule('');
         setIsSubmitted(false);
+        setFilterCategory(null);
     };
 
     const handleModuleChange = (val: string) => {
         setSelectedModule(val);
         setIsSubmitted(false);
+        setFilterCategory(null);
     };
 
     const categories = [
@@ -838,6 +877,7 @@ const RcaManagerView = () => {
         if (!selectedApp || !selectedRelease || !selectedDevice || !selectedModule) return;
         
         setLoading(true);
+        setFilterCategory(null); // Reset interactive filter on new search
         try {
             const params = new URLSearchParams();
             params.append('app', selectedApp);
@@ -857,12 +897,35 @@ const RcaManagerView = () => {
         }
     };
 
+    const syncRunRca = async (runId: number) => {
+        setLoading(true);
+        try {
+            const response = await fetch(`/api/admin/rebuild-rca?runId=${runId}`);
+            const data = await response.json();
+            
+            if (data.count > 0) {
+                const breakdownStr = Object.entries(data.breakdown)
+                    .map(([cat, count]) => `• ${count} records moved to ${cat}`)
+                    .join('\n');
+                
+                alert(`✅ RCA Sync Complete\n\n${breakdownStr}\n\nTotal Updated: ${data.count} records.`);
+            } else {
+                alert(data.message || 'No records require backfilling.');
+            }
+
+            if (isSubmitted) fetchFailures(); // Refresh current view
+        } catch (err) {
+            alert('Failed to sync RCA.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
     useEffect(() => {
         fetchMetadata();
     }, []);
 
     // Background Auto-Sync: Triggered whenever metadata is loaded or filters change
-    // Ensures "Unknowns" are backfilled without manual button clicks
     useEffect(() => {
         const autoSync = async () => {
             if (isMetaLoading) return;
@@ -877,8 +940,6 @@ const RcaManagerView = () => {
         };
         autoSync();
     }, [isMetaLoading]);
-
-    // Effect removed - fetching is now manual
 
     const handleUpdate = async (id: number, payload: any) => {
         setUpdating(true);
@@ -915,6 +976,7 @@ const RcaManagerView = () => {
         setSelectedDevice('');
         setSelectedModule('');
         setIsSubmitted(false);
+        setFilterCategory(null);
     };
 
     // Dynamic filtering of options based on previous steps
@@ -962,6 +1024,11 @@ const RcaManagerView = () => {
         XLSX.utils.book_append_sheet(wb, ws, "RCA Report");
         XLSX.writeFile(wb, `RCA_Report_${selectedApp}_${selectedRelease}.xlsx`);
     };
+
+    // Apply the interactive category filter
+    const displayedFailures = filterCategory 
+        ? failures.filter(f => (f.rcaCategory || 'Unknown') === filterCategory)
+        : failures;
 
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
@@ -1018,6 +1085,7 @@ const RcaManagerView = () => {
                             <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1 flex items-center"><span className={`w-4 h-4 rounded-full ${selectedDevice ? 'bg-indigo-100 text-indigo-600' : 'bg-gray-50 text-gray-300'} flex items-center justify-center mr-1 text-[8px]`}>4</span> Module</label>
                             <select disabled={!selectedDevice} value={selectedModule} onChange={(e) => handleModuleChange(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3.5 text-xs font-black text-gray-900 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all disabled:opacity-40">
                                 <option value="">Select Module</option>
+                                <option value="All">All Modules</option>
                                 {dynamicOptions.modules.map((mod: string) => <option key={mod} value={mod}>{mod.toUpperCase()}</option>)}
                             </select>
                         </div>
@@ -1049,20 +1117,40 @@ const RcaManagerView = () => {
                 ) : (
                     <>
                         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                            <div className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
-                                <p className="text-[10px] font-black text-gray-400 uppercase mb-1">Total Failures</p>
-                                <h4 className="text-2xl font-black text-gray-900">{failures.length}</h4>
-                            </div>
-                            {Object.entries(categoryStats).slice(0, 5).map(([cat, count]: any) => (
-                                <div key={cat} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
-                                    <p className="text-[10px] font-black text-gray-400 uppercase mb-1 truncate">{cat}</p>
-                                    <h4 className="text-2xl font-black text-gray-900">{count}</h4>
-                                </div>
+                            <button 
+                                onClick={() => setFilterCategory(null)}
+                                className={`p-4 rounded-2xl border transition-all text-left ${filterCategory === null ? 'bg-indigo-600 border-indigo-600 text-white shadow-lg' : 'bg-white border-gray-100 hover:border-indigo-200 shadow-sm'}`}
+                            >
+                                <p className={`text-[10px] font-black uppercase mb-1 ${filterCategory === null ? 'text-indigo-100' : 'text-gray-400'}`}>Total Failures</p>
+                                <h4 className="text-2xl font-black">{failures.length}</h4>
+                            </button>
+                            {Object.entries(categoryStats).map(([cat, count]: any) => (
+                                <button 
+                                    key={cat} 
+                                    onClick={() => setFilterCategory(cat)}
+                                    className={`p-4 rounded-2xl border transition-all text-left ${filterCategory === cat ? 'bg-indigo-600 border-indigo-600 text-white shadow-lg' : 'bg-white border-gray-100 hover:border-indigo-200 shadow-sm'}`}
+                                >
+                                    <p className={`text-[10px] font-black uppercase mb-1 truncate ${filterCategory === cat ? 'text-indigo-100' : 'text-gray-400'}`}>{cat}</p>
+                                    <h4 className="text-2xl font-black">{count}</h4>
+                                </button>
                             ))}
                         </div>
 
                         {/* Table */}
                         <div className="bg-white rounded-[40px] border border-gray-100 shadow-2xl overflow-hidden">
+                            <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50/30">
+                                <div className="flex items-center space-x-2">
+                                    <Layers size={16} className="text-indigo-600" />
+                                    <h5 className="text-[10px] font-black uppercase tracking-widest text-gray-900">
+                                        Showing {displayedFailures.length} {filterCategory ? `${filterCategory} ` : ""}Failures
+                                    </h5>
+                                </div>
+                                {filterCategory && (
+                                    <button onClick={() => setFilterCategory(null)} className="text-[9px] font-black text-indigo-600 hover:text-indigo-800 uppercase flex items-center">
+                                        <X size={12} className="mr-1" /> Clear Category Filter
+                                    </button>
+                                )}
+                            </div>
                             <div className="overflow-x-auto">
                                 <table className="w-full text-left">
                                     <thead className="bg-gray-50 text-[10px] text-gray-400 uppercase font-black tracking-widest border-b border-gray-100">
@@ -1075,7 +1163,7 @@ const RcaManagerView = () => {
                                         </tr>
                                     </thead>
                                     <tbody className="text-sm divide-y divide-gray-50">
-                                        {failures.length === 0 ? (
+                                        {displayedFailures.length === 0 ? (
                                             <tr>
                                                 <td colSpan={5} className="py-24 text-center">
                                                     <div className="flex flex-col items-center space-y-4">
@@ -1083,35 +1171,15 @@ const RcaManagerView = () => {
                                                             <AlertTriangle size={48} className="text-amber-500" />
                                                         </div>
                                                         <div className="space-y-1">
-                                                            <h4 className="text-xl font-black text-gray-900 uppercase tracking-tighter">Analysis Mismatch</h4>
+                                                            <h4 className="text-xl font-black text-gray-900 uppercase tracking-tighter">No Results Found</h4>
                                                             <p className="text-gray-400 font-bold text-xs uppercase tracking-widest max-w-sm mx-auto leading-relaxed">
-                                                                We found zero results for this specific combination.
+                                                                Try changing your category or filter selection.
                                                             </p>
                                                         </div>
-                                                        {debugInfo && (
-                                                            <div className="bg-gray-50 border border-gray-100 p-6 rounded-3xl grid grid-cols-2 gap-4 text-left w-full max-w-md">
-                                                                <div className="space-y-1">
-                                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Total Failed in DB</p>
-                                                                    <p className="text-sm font-black text-gray-900">{debugInfo.totalFailed}</p>
-                                                                </div>
-                                                                <div className="space-y-1">
-                                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">App Match</p>
-                                                                    <p className="text-sm font-black text-indigo-600">{debugInfo.appOnly}</p>
-                                                                </div>
-                                                                <div className="space-y-1">
-                                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Release Match</p>
-                                                                    <p className="text-sm font-black text-indigo-600">{debugInfo.releaseOnly}</p>
-                                                                </div>
-                                                                <div className="space-y-1">
-                                                                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Module Match</p>
-                                                                    <p className="text-sm font-black text-indigo-600">{debugInfo.moduleOnly}</p>
-                                                                </div>
-                                                            </div>
-                                                        )}
                                                     </div>
                                                 </td>
                                             </tr>
-                                        ) : failures.map((f) => (
+                                        ) : displayedFailures.map((f) => (
                                             <tr key={f.id} className="hover:bg-gray-50/50 transition-colors group">
                                                 <td className="py-6 px-8">
                                                     <div className="font-black text-gray-900 text-sm group-hover:text-indigo-600 transition-colors capitalize line-clamp-1">{f.testCaseName}</div>
@@ -1127,12 +1195,12 @@ const RcaManagerView = () => {
                                                             {f.rcaStatus === 'Verified' || f.rcaStatus === 'Fix Planned' ? (
                                                                 <UserCheck size={12} className="mr-1.5" />
                                                             ) : (
-                                                                <Bot size={12} className="mr-1.5" />
+                                                                <Activity size={12} className="mr-1.5" />
                                                             )}
                                                             {f.rcaCategory || 'Unknown'}
                                                         </span>
                                                         <span className="text-[8px] font-bold text-gray-400 uppercase tracking-tighter">
-                                                            {f.rcaStatus === 'Verified' || f.rcaStatus === 'Fix Planned' ? 'Human Verified' : 'AI Predicted'}
+                                                            {f.rcaStatus === 'Verified' || f.rcaStatus === 'Fix Planned' ? 'Human Verified' : 'System Identified'}
                                                         </span>
                                                     </div>
                                                 </td>
@@ -1259,12 +1327,22 @@ const HistoryView = () => {
         } catch (err) { } finally { setLoading(false); setLoadingMore(false); }
     };
 
-    const syncRca = async () => {
+    const syncRca = async (runId?: number) => {
         setSyncingRca(true);
         try {
-            const response = await fetch('/api/admin/rebuild-rca');
+            const url = runId ? `/api/admin/rebuild-rca?runId=${runId}` : '/api/admin/rebuild-rca';
+            const response = await fetch(url);
             const data = await response.json();
-            alert(data.message || 'RCA Sync complete.');
+            
+            if (data.count > 0) {
+                const breakdownStr = Object.entries(data.breakdown)
+                    .map(([cat, count]) => `• ${count} records moved to ${cat}`)
+                    .join('\n');
+                
+                alert(`✅ RCA Sync Complete\n\n${breakdownStr}\n\nTotal Updated: ${data.count} records.`);
+            } else {
+                alert(data.message || 'No records require backfilling.');
+            }
         } catch (err) {
             alert('Failed to sync RCA data.');
         } finally {
@@ -1286,6 +1364,13 @@ const HistoryView = () => {
         } catch (err) { }
     };
 
+    const getNamingSource = (module: string) => {
+        // If the module name contains spaces, it was likely cleaned from a JSON ID
+        // (Original filename parts were stored with spaces in our new logic)
+        if (module.includes(' ')) return { label: 'JSON ID', color: 'text-emerald-600 bg-emerald-50' };
+        return { label: 'Filename', color: 'text-amber-600 bg-amber-50' };
+    };
+
     if (loading) return <div className="flex justify-center p-10"><RefreshCcw className="animate-spin text-indigo-600" /></div>;
 
     return (
@@ -1296,7 +1381,7 @@ const HistoryView = () => {
                     {selectedIds.size > 0 && <button onClick={deleteSelected} className="bg-red-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold transition-all"><Trash2 size={14} className="inline mr-2"/>Delete ({selectedIds.size})</button>}
                 </div>
                 <button 
-                    onClick={syncRca} 
+                    onClick={() => syncRca()} 
                     disabled={syncingRca}
                     className="flex items-center space-x-2 bg-indigo-50 text-indigo-600 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-indigo-100 transition-all disabled:opacity-50"
                 >
@@ -1304,7 +1389,61 @@ const HistoryView = () => {
                     <span>{syncingRca ? 'Syncing...' : 'Re-Sync RCA History'}</span>
                 </button>
             </div>
-            <div className="overflow-x-auto"><table className="w-full text-left"><thead><tr className="border-b-2 text-gray-900 text-xs uppercase font-bold"><th className="px-4 py-3"><input type="checkbox" checked={selectedIds.size === runs.length && runs.length > 0} onChange={toggleSelectAll}/></th><th className="px-4 py-3">Date</th><th className="px-4 py-3">Release</th><th className="px-4 py-3">Module</th><th className="px-4 py-3">Metadata</th></tr></thead><tbody className="text-sm">{runs.map((run) => (<tr key={run.id} className={`border-b transition-colors ${selectedIds.has(run.id) ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}><td className="px-4 py-4"><input type="checkbox" checked={selectedIds.has(run.id)} onChange={() => toggleSelect(run.id)}/></td><td className="px-4 py-4 font-medium text-gray-900">{new Date(run.createdAt).toLocaleDateString()}<br/><span className="text-xs text-indigo-600">{new Date(run.createdAt).toLocaleTimeString()}</span></td><td className="px-4 py-4 font-bold text-gray-900">{run.releaseName}</td><td className="py-4 px-4"><span className="bg-indigo-100 text-indigo-800 px-2 py-1 rounded text-xs font-bold uppercase">{run.module}</span></td><td className="py-4 px-4"><div className="flex space-x-2"><span className="bg-gray-200 px-2 py-0.5 rounded text-[10px] font-bold">{run.channel}</span><span className="bg-gray-200 px-2 py-0.5 rounded text-[10px] font-bold">{run.device}</span></div></td></tr>))}</tbody></table></div>
+            <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                    <thead>
+                        <tr className="border-b-2 text-gray-900 text-[10px] uppercase font-black tracking-widest">
+                            <th className="px-4 py-4"><input type="checkbox" checked={selectedIds.size === runs.length && runs.length > 0} onChange={toggleSelectAll}/></th>
+                            <th className="px-4 py-4">Date</th>
+                            <th className="px-4 py-4">Release</th>
+                            <th className="px-4 py-4">Module</th>
+                            <th className="px-4 py-4">Project</th>
+                            <th className="px-4 py-4">Metadata</th>
+                            <th className="px-4 py-4 text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody className="text-sm">
+                        {runs.map((run) => {
+                            const source = getNamingSource(run.module);
+                            return (
+                                <tr key={run.id} className={`border-b transition-colors ${selectedIds.has(run.id) ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}>
+                                    <td className="px-4 py-4"><input type="checkbox" checked={selectedIds.has(run.id)} onChange={() => toggleSelect(run.id)}/></td>
+                                    <td className="px-4 py-4 font-medium text-gray-900">
+                                        <div className="font-black text-xs">{new Date(run.createdAt).toLocaleDateString()}</div>
+                                        <div className="text-[10px] text-indigo-600 font-bold">{new Date(run.createdAt).toLocaleTimeString()}</div>
+                                    </td>
+                                    <td className="px-4 py-4 font-bold text-gray-900 text-xs">{run.releaseName}</td>
+                                    <td className="py-4 px-4">
+                                        <span className="bg-indigo-600 text-white px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-tight shadow-sm">{run.module}</span>
+                                    </td>
+                                    <td className="py-4 px-4">
+                                        <div className="flex items-center space-x-1">
+                                            <span className="bg-gray-900 text-white px-2 py-0.5 rounded text-[9px] font-black uppercase">{run.channel}</span>
+                                            <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-[9px] font-black uppercase">{run.device}</span>
+                                        </div>
+                                    </td>
+                                    <td className="py-4 px-4">
+                                        <span className={`px-2 py-1 rounded text-[9px] font-black uppercase border ${source.color}`}>
+                                            {source.label}
+                                        </span>
+                                    </td>
+                                    <td className="py-4 px-4 text-right">
+                                        <div className="flex items-center justify-end">
+                                            <button 
+                                                onClick={() => syncRca(run.id)}
+                                                title="Refresh RCA for this Run"
+                                                className="p-2.5 hover:bg-indigo-600 hover:text-white text-indigo-600 rounded-xl transition-all border border-indigo-100 shadow-sm bg-white"
+                                            >
+                                                <RotateCw size={16} />
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
             {hasMore && <div className="pt-6 flex justify-center"><button onClick={() => fetchHistory(true)} disabled={loadingMore} className="bg-indigo-50 text-indigo-600 px-8 py-2.5 rounded-xl text-sm font-bold">{loadingMore ? 'Loading...' : 'Load More'}</button></div>}
         </div>
     );

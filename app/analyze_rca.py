@@ -7,37 +7,68 @@ from pathlib import Path
 
 # RCA Categories and their matching patterns (strings or regex)
 RCA_CATEGORIES = {
-    'Comparision Failed': ['expect(received).tocontain(expected)'],
+    'Comparision Failed': [
+        'expect(received).tocontain(expected)',
+        'expect(received).tobe(expected)',
+        'comparison failed'
+    ],
     'Validation Failed': [
         'expect(received).tobetruthy()',
         'expect(locator).tohavetext',
         'expect(locator).tobechecked',
-        'expect(locator).tobevisible'
+        'expect(locator).tobevisible',
+        'validation failed',
+        'assertion error'
     ],
     'Code Error': [
         'not a function',
-        "typeerror: cannot read properties of null (reading 'tostring')"
+        "typeerror: cannot read properties of null (reading 'tostring')",
+        'referenceerror',
+        'syntaxerror'
     ],
     'Locator Not Found': [
         'element not found',
-        'element is not attached to the dom'
+        'element is not attached to the dom',
+        'waiting for locator',
+        'no element found for selector'
     ],
     'Logic Issue': [
         'typeerror: cannot read properties of undefined (reading',
-        "cannot read properties of undefined (reading 'unicode') at escaperegexforselector"
+        "cannot read properties of undefined (reading 'unicode') at escaperegexforselector",
+        'logic error'
     ],
     'DDSE - Given Element Not Found': ['not found even after multiple retries & even with starts with approach.'],
-    'Browser intermittently closed': ['target page, context or browser has been closed'],
-    'MEW/TAB compatability issue': ['element is outside of the viewport'],
+    'Browser intermittently closed': [
+        'target page, context or browser has been closed',
+        'browser closed',
+        'navigation failed because browser has disconnected'
+    ],
+    'MEW/TAB compatability issue': [
+        'element is outside of the viewport',
+        'overlapping element'
+    ],
     'Locator Frame Issue': ['locators must belong to the same frame.'],
     'API Failure (HTML Response)': [
         'received html response, indicating a failure.',
         'api response not found for endpoint',
-        'empty in the api response'
+        'empty in the api response',
+        'status code 500',
+        'status code 404',
+        'failed to fetch'
     ],
     'Validation Issue': [
         r'expect.*pass.*receive.*fail', 
         r'expect.*fail.*receive.*pass'
+    ],
+    'Timeout Error': [
+        'timeout exceeded',
+        'timed out',
+        'exceeded 30000ms'
+    ],
+    'Network Error': [
+        'net::err_connection_refused',
+        'net::err_name_not_resolved',
+        'network error'
     ]
 }
 

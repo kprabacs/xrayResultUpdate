@@ -19,15 +19,15 @@ export async function GET(request: NextRequest) {
             status: { contains: 'failed', mode: 'insensitive' }
         };
 
-        if (release) {
+        if (release && release.toLowerCase() !== 'all') {
             where.releaseName = { contains: release, mode: 'insensitive' };
         }
 
-        if (app || module || device) {
+        if ((app && app.toLowerCase() !== 'all') || (module && module.toLowerCase() !== 'all') || (device && device.toLowerCase() !== 'all')) {
             where.TestRunSummary = {};
-            if (app) where.TestRunSummary.channel = { contains: app, mode: 'insensitive' };
-            if (module) where.TestRunSummary.module = { contains: module, mode: 'insensitive' };
-            if (device) where.TestRunSummary.device = { contains: device, mode: 'insensitive' };
+            if (app && app.toLowerCase() !== 'all') where.TestRunSummary.channel = { contains: app, mode: 'insensitive' };
+            if (module && module.toLowerCase() !== 'all') where.TestRunSummary.module = { contains: module, mode: 'insensitive' };
+            if (device && device.toLowerCase() !== 'all') where.TestRunSummary.device = { contains: device, mode: 'insensitive' };
         }
 
         console.log('RCA Final Where:', JSON.stringify(where, null, 2));

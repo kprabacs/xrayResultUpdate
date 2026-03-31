@@ -99,15 +99,27 @@ export async function GET() {
             };
         });
 
-        // Projection 1: App + Release
+        // Projection 1: App + Release (Deduplicated by testCaseId)
         const projection1Map = new Map();
+        const releaseAppKeyToUniqueTests = new Map();
+
         results.forEach(res => {
-            const key = `${res.app}|${res.release}`;
-            const stats = projection1Map.get(key) || { testCount: 0, passCount: 0, failCount: 0 };
-            stats.testCount++;
-            if (res.status === 'passed') stats.passCount++;
-            else if (res.status === 'failed') stats.failCount++;
-            projection1Map.set(key, stats);
+            const relAppKey = `${res.app}|${res.release}`;
+            if (!releaseAppKeyToUniqueTests.has(relAppKey)) {
+                releaseAppKeyToUniqueTests.set(relAppKey, new Set());
+            }
+            
+            const uniqueTests = releaseAppKeyToUniqueTests.get(relAppKey);
+            
+            // Only count if we haven't seen this testCaseId for this App|Release combo
+            if (!uniqueTests.has(res.testCaseId)) {
+                uniqueTests.add(res.testCaseId);
+                const stats = projection1Map.get(relAppKey) || { testCount: 0, passCount: 0, failCount: 0 };
+                stats.testCount++;
+                if (res.status === 'passed') stats.passCount++;
+                else if (res.status === 'failed') stats.failCount++;
+                projection1Map.set(relAppKey, stats);
+            }
         });
 
         const projection1 = Array.from(projection1Map.entries()).map(([key, stats]) => {
@@ -115,14 +127,25 @@ export async function GET() {
             return { app, release, ...stats, passPct: stats.testCount > 0 ? (stats.passCount / stats.testCount) * 100 : 0 };
         });
 
-        // Projection 4: Trend
+        // Projection 4: Trend (Deduplicated by testCaseId)
         const projection4Map = new Map();
+        const trendKeyToUniqueTests = new Map();
+
         results.forEach(res => {
-            const key = `${res.release}|${res.app}`;
-            const stats = projection4Map.get(key) || { pass: 0, fail: 0 };
-            if (res.status === 'passed') stats.pass++;
-            else if (res.status === 'failed') stats.fail++;
-            projection4Map.set(key, stats);
+            const trendKey = `${res.release}|${res.app}`;
+            if (!trendKeyToUniqueTests.has(trendKey)) {
+                trendKeyToUniqueTests.set(trendKey, new Set());
+            }
+
+            const uniqueTests = trendKeyToUniqueTests.get(trendKey);
+
+            if (!uniqueTests.has(res.testCaseId)) {
+                uniqueTests.add(res.testCaseId);
+                const stats = projection4Map.get(trendKey) || { pass: 0, fail: 0 };
+                if (res.status === 'passed') stats.pass++;
+                else if (res.status === 'failed') stats.fail++;
+                projection4Map.set(trendKey, stats);
+            }
         });
 
         const projection4 = Array.from(projection4Map.entries()).map(([k, s]) => {

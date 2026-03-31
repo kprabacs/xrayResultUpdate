@@ -238,7 +238,6 @@ export default function XrayUploadForm() {
     if (workflow === 'bulk-cucumber') {
         if (!updateType) { throw new Error('Please select a Type of Action.'); }
         if (updateType === 'update' && !testExecKey.trim()) { throw new Error('Test Execution Key is mandatory for updates.'); }
-        if (updateType === 'create' && !summary.trim()) { throw new Error('Summary is mandatory for creating executions.'); }
         if (!testPlanKey.trim()) { throw new Error('Test Plan Key is mandatory.'); }
 
         const zip = await JSZip.loadAsync(file);
@@ -359,6 +358,17 @@ export default function XrayUploadForm() {
     } else if (workflow === 'bulk-cucumber') {
         if (!release.trim()) { throw new Error('Release is mandatory for saving a bulk report.'); }
         dbFormData.append('releaseName', release);
+        
+        // Pass Xray metadata if applicable
+        if (actionType === 'both') {
+            dbFormData.append('uploadToXray', 'true');
+            dbFormData.append('jiraToken', jiraToken);
+            dbFormData.append('testPlanKey', testPlanKey);
+            dbFormData.append('testExecKey', testExecKey);
+            dbFormData.append('updateType', updateType);
+            dbFormData.append('summary', summary);
+        }
+        
         endpoint = '/api/save-bulk-report';
     } else {
         throw new Error('Please select a valid Cucumber workflow (single or bulk).');
@@ -389,24 +399,32 @@ export default function XrayUploadForm() {
         }
 
         const results: string[] = [];
-        const actionsToRun = [];
-
-        if (actionType === 'saveToDb' || actionType === 'both') {
-            actionsToRun.push(runSaveToDb());
-        }
-        if (actionType === 'uploadToXray' || actionType === 'both') {
-            actionsToRun.push(runUploadToXray());
-        }
-
-        const settledResults = await Promise.allSettled(actionsToRun);
-
-        settledResults.forEach(res => {
-            if (res.status === 'fulfilled') {
-                results.push(res.value);
-            } else {
-                results.push(res.reason.message);
+        
+        if (actionType === 'both' && workflow === 'bulk-cucumber') {
+            // Consolidated bulk call
+            const res = await runSaveToDb();
+            results.push(res);
+        } else {
+            // Parallel or separate calls
+            const actionsToRun = [];
+            if (actionType === 'saveToDb' || actionType === 'both') {
+                actionsToRun.push(runSaveToDb());
             }
-        });
+            if (actionType === 'uploadToXray') {
+                actionsToRun.push(runUploadToXray());
+            } else if (actionType === 'both' && workflow !== 'bulk-cucumber') {
+                actionsToRun.push(runUploadToXray());
+            }
+
+            const settledResults = await Promise.allSettled(actionsToRun);
+            settledResults.forEach(res => {
+                if (res.status === 'fulfilled') {
+                    results.push(res.value);
+                } else {
+                    results.push(res.reason.message);
+                }
+            });
+        }
         
         setSuccess(<ul>{results.map((r, i) => <li key={i}>{r}</li>)}</ul>);
         resetForm();

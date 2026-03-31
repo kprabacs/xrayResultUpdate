@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { parseCucumberReport, ParsedCucumberReport } from '@/utils/cucumberReportParser';
+import { categorizeRcaSync } from '@/utils/rcaAnalyzer';
 import JSZip from 'jszip';
 import crypto from 'crypto';
 
@@ -22,7 +23,15 @@ export async function POST(request: Request) {
 
         const formData = await request.formData();
         const file = formData.get('file') as File | null;
-        const releaseName = formData.get('releaseName') as string || 'N/A';
+        const releaseName = (formData.get('releaseName') as string || 'N/A').trim();
+        
+        // Xray metadata from form
+        const jiraToken = formData.get('jiraToken') as string || '';
+        const testPlanKey = formData.get('testPlanKey') as string || '';
+        let currentTestExecKey = formData.get('testExecKey') as string || '';
+        let currentUpdateType = formData.get('updateType') as string || ''; // 'create' or 'update'
+        const xraySummary = formData.get('summary') as string || '';
+        const uploadToXray = formData.get('uploadToXray') === 'true';
 
         if (!file) {
             return NextResponse.json({ error: 'No file uploaded.' }, { status: 400 });
@@ -42,8 +51,7 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'The uploaded ZIP file contains no .json files.' }, { status: 400 });
         }
 
-        const reportsToCreate: { summaryData: SummaryData, testCases: ParsedCucumberReport['testCases'] }[] = [];
-        const skippedFiles: string[] = [];
+        const reportsToCreate: { summaryData: SummaryData, testCases: ParsedCucumberReport['testCases'], rawJson: any }[] = [];
         const duplicateFiles: string[] = [];
         let totalSkippedScenarios = 0;
 
@@ -51,35 +59,29 @@ export async function POST(request: Request) {
             const fileName = jsonFile.name.split('/').pop() || "";
             const fileNameWithoutExt = fileName.replace(/\.json$/i, '');
             
-            let moduleName = "";
-            let channelName = "";
-            let deviceName = "";
+            let fallbackModuleName = "";
+            let fallbackChannelName = "";
+            let fallbackDeviceName = "";
 
             // Try hyphen format first (module-channel-device)
             const hyphenParts = fileNameWithoutExt.split('-');
             if (hyphenParts.length === 3) {
-                [moduleName, channelName, deviceName] = hyphenParts;
+                [fallbackModuleName, fallbackChannelName, fallbackDeviceName] = hyphenParts;
             } else {
-                // Try underscore format (channel_module_device) - matching the ZIP content provided
+                // Try underscore format (channel_module_device)
                 const underscoreParts = fileNameWithoutExt.split('_');
                 if (underscoreParts.length === 3) {
-                    [channelName, moduleName, deviceName] = underscoreParts;
-                } else {
-                    skippedFiles.push(jsonFile.name);
-                    continue;
+                    [fallbackChannelName, fallbackModuleName, fallbackDeviceName] = underscoreParts;
                 }
             }
             
-            moduleName = moduleName.trim().toLowerCase();
-            channelName = channelName.trim().toLowerCase();
-            deviceName = deviceName.trim().toLowerCase();
+            fallbackModuleName = (fallbackModuleName || "unknown").trim().toLowerCase();
+            fallbackChannelName = (fallbackChannelName || "unknown").trim().toLowerCase();
+            fallbackDeviceName = (fallbackDeviceName || "unknown").trim().toLowerCase();
 
             const content = await jsonFile.async('string');
-            
-            // Generate hash to prevent duplicate uploads
             const reportHash = crypto.createHash('sha256').update(content).digest('hex');
 
-            // Check if this report was already uploaded
             const existingReport = await prisma.testRunSummary.findFirst({
                 where: { reportHash }
             });
@@ -90,31 +92,36 @@ export async function POST(request: Request) {
             }
 
             const reportJson = JSON.parse(content);
-            const { summary, testCases, skippedCount } = parseCucumberReport(reportJson);
+            const { summary, testCases, metadata, skippedCount } = parseCucumberReport(reportJson);
             totalSkippedScenarios += skippedCount;
+
+            const finalModuleName = (metadata?.moduleName || fallbackModuleName).toLowerCase();
+            const finalChannelName = (metadata?.applicationName || fallbackChannelName).toLowerCase();
+            const finalDeviceName = (metadata?.deviceType || fallbackDeviceName).toLowerCase();
 
             reportsToCreate.push({
                 summaryData: {
                     ...summary,
                     releaseName,
-                    module: moduleName,
-                    channel: channelName,
-                    device: deviceName,
+                    module: finalModuleName,
+                    channel: finalChannelName,
+                    device: finalDeviceName,
                     reportHash,
                 },
-                testCases
+                testCases,
+                rawJson: reportJson
             });
         }
 
         if (reportsToCreate.length === 0) {
             return NextResponse.json({ 
-                error: 'No new reports to process. All files were duplicates, malformed, or improperly named.',
-                duplicateFiles,
-                skippedFiles
+                error: 'No new reports to process. All files were duplicates or malformed.',
+                duplicateFiles
             }, { status: 400 });
         }
 
-        const result = await prisma.$transaction(async (tx) => {
+        // 1. Save to Database
+        const dbResult = await prisma.$transaction(async (tx) => {
             const createdSummaries = [];
             for (const report of reportsToCreate) {
                 const testRunSummary = await tx.testRunSummary.create({
@@ -126,13 +133,15 @@ export async function POST(request: Request) {
                     releaseName,
                     runAttempt: 1,
                     testRunSummaryId: testRunSummary.id,
+                    rcaCategory: tc.status === 'failed' ? categorizeRcaSync(tc.errorMessage || null) : null,
+                    rcaStatus: tc.status === 'failed' ? 'Auto-Detected' : null
                 }));
 
                 await tx.testCaseResult.createMany({
                     data: testCaseData,
                 });
 
-                // Update Flaky Test Tracking for each test case in the report
+                // Update Flaky Test Tracking
                 for (const tc of report.testCases) {
                     if (tc.testCaseId) {
                         await tx.flakyTest.upsert({
@@ -165,22 +174,72 @@ export async function POST(request: Request) {
             return createdSummaries;
         });
 
-        let finalMessage = `Successfully processed and saved ${result.length} reports.`;
-        if (totalSkippedScenarios > 0) finalMessage += ` (${totalSkippedScenarios} malformed/duplicate test cases skipped).`;
+        // 2. Handle Xray Upload (Serial Strategy to prevent 413)
+        let xrayMessage = "";
+        if (uploadToXray && jiraToken) {
+            let successCount = 0;
+            let failCount = 0;
+            let lastError = "";
+
+            const host = request.headers.get('host') || process.env.VERCEL_URL || 'localhost:3000';
+            const protocol = host.includes('localhost') ? 'http' : 'https';
+            const xrayUrl = `${protocol}://${host}/api/upload-to-xray`;
+
+            for (let i = 0; i < reportsToCreate.length; i++) {
+                const report = reportsToCreate[i];
+                try {
+                    const xrayResponse = await fetch(xrayUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            cucumberReport: Array.isArray(report.rawJson) ? report.rawJson : [report.rawJson], 
+                            token: jiraToken, 
+                            updateType: currentUpdateType, 
+                            testExecKey: currentTestExecKey, 
+                            testPlanKey, 
+                            summary: xraySummary || `Bulk Upload: ${releaseName} (${report.summaryData.module})` 
+                        }),
+                    });
+
+                    const xrayResult = await xrayResponse.json();
+                    if (xrayResponse.ok) {
+                        successCount++;
+                        // If we created a new execution, use its key for all remaining reports
+                        if (currentUpdateType === 'create') {
+                            currentTestExecKey = xrayResult.key || xrayResult.testExecutionKey;
+                            currentUpdateType = 'update'; // Switch to update for subsequent files
+                        }
+                    } else {
+                        failCount++;
+                        lastError = xrayResult.error || 'Unknown error';
+                        console.error(`Xray upload failed for file ${i}:`, xrayResult);
+                    }
+                } catch (err) {
+                    failCount++;
+                    lastError = err instanceof Error ? err.message : 'Connection error';
+                    console.error(`Exception during Xray upload for file ${i}:`, err);
+                }
+            }
+            
+            xrayMessage = ` | Xray: ${successCount} synced, ${failCount} failed.`;
+            if (currentTestExecKey) xrayMessage += ` (Key: ${currentTestExecKey})`;
+            if (failCount > 0) xrayMessage += ` Last Error: ${lastError}`;
+        }
+
+        let finalMessage = `Successfully processed ${dbResult.length} reports.${xrayMessage}`;
+        if (totalSkippedScenarios > 0) finalMessage += ` (${totalSkippedScenarios} malformed scenarios skipped).`;
         if (duplicateFiles.length > 0) finalMessage += ` Skipped ${duplicateFiles.length} duplicates.`;
-        if (skippedFiles.length > 0) finalMessage += ` Skipped ${skippedFiles.length} invalid files.`;
 
         return NextResponse.json({ 
             message: finalMessage,
-            savedReports: result,
+            savedReports: dbResult,
             duplicateFiles: duplicateFiles.length > 0 ? duplicateFiles : undefined,
-            skippedFiles: skippedFiles.length > 0 ? skippedFiles : undefined,
         }, { status: 201 });
 
     } catch (error) {
-        console.error('Bulk API Error:', error);
+        console.error('Bulk API Global Error:', error);
         return NextResponse.json({ 
-            error: `Backend error: ${error instanceof Error ? error.message : 'Unknown error'}`
+            error: `Bulk API Error: ${error instanceof Error ? error.message : 'An internal server error occurred'}`
         }, { status: 500 });
     }
 }
