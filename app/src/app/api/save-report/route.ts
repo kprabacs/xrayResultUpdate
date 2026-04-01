@@ -26,6 +26,7 @@ export async function POST(request: Request) {
         const channel = (formData.get('channel') as string || 'N/A').trim().toLowerCase();
         const device = (formData.get('device') as string || 'N/A').trim().toLowerCase();
         const runAttempt = parseInt(formData.get('runAttempt') as string || '1', 10);
+        const jiraExecutionKey = formData.get('jiraExecutionKey') as string || null;
 
         if (!file) {
             return NextResponse.json({ error: 'No file uploaded.' }, { status: 400 });
@@ -81,6 +82,7 @@ export async function POST(request: Request) {
                     channel: finalChannel,
                     device: finalDevice,
                     reportHash,
+                    jiraExecutionKey,
                 }
             });
 

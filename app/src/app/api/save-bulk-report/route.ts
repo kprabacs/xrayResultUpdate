@@ -187,6 +187,8 @@ export async function POST(request: Request) {
 
             for (let i = 0; i < reportsToCreate.length; i++) {
                 const report = reportsToCreate[i];
+                const dbSummaryId = dbResult[i].id; // Corresponding DB record ID
+
                 try {
                     const xrayResponse = await fetch(xrayUrl, {
                         method: 'POST',
@@ -204,10 +206,20 @@ export async function POST(request: Request) {
                     const xrayResult = await xrayResponse.json();
                     if (xrayResponse.ok) {
                         successCount++;
-                        // If we created a new execution, use its key for all remaining reports
-                        if (currentUpdateType === 'create') {
-                            currentTestExecKey = xrayResult.key || xrayResult.testExecutionKey;
-                            currentUpdateType = 'update'; // Switch to update for subsequent files
+                        const executionKey = xrayResult.key || xrayResult.testExecutionKey;
+                        
+                        // SYNC BACK: Store the execution key in our database for this specific run
+                        if (executionKey) {
+                            await prisma.testRunSummary.update({
+                                where: { id: dbSummaryId },
+                                data: { jiraExecutionKey: executionKey }
+                            });
+
+                            // If we created a new execution, use its key for all remaining reports
+                            if (currentUpdateType === 'create') {
+                                currentTestExecKey = executionKey;
+                                currentUpdateType = 'update'; // Switch to update for subsequent files
+                            }
                         }
                     } else {
                         failCount++;

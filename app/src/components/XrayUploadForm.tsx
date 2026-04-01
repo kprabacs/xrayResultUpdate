@@ -44,6 +44,12 @@ export default function XrayUploadForm() {
   const [channel, setChannel] = useState('');
   const [device, setDevice] = useState('');
 
+  // Load saved token on mount
+  React.useEffect(() => {
+    const savedToken = localStorage.getItem('resulthub_xray_token');
+    if (savedToken) setJiraToken(savedToken);
+  }, []);
+
   // Evaluation State
   const [evaluating, setEvaluating] = useState(false);
   const [evaluationResult, setEvaluationResult] = useState<{message: string, status: string} | null>(null);
@@ -227,6 +233,10 @@ export default function XrayUploadForm() {
             }
             throw new Error(msg); 
         }
+
+        // SAVE TOKEN FOR RCA MANAGER
+        localStorage.setItem('resulthub_xray_token', jiraToken);
+
         let successMsg = `Xray Upload Successful: ${result.key || result.testExecutionKey || 'Done'}`;
         if (result.skipped && result.skipped.length > 0) {
             successMsg += ` (Skipped tests not updated: ${result.skipped.join(', ')})`;

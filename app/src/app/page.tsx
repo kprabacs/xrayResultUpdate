@@ -29,7 +29,10 @@ import {
     X,
     Dna,
     Activity,
-    RotateCw
+    RotateCw,
+    ShieldCheck,
+    ExternalLink,
+    Bug
 } from 'lucide-react';
 import { 
     BarChart, 
@@ -801,6 +804,7 @@ const RcaManagerView = () => {
     const [isMetaLoading, setIsMetaLoading] = useState(true);
     const [editingFailure, setEditingFailure] = useState<any | null>(null);
     const [updating, setUpdating] = useState(false);
+    const [creatingBug, setCreatingBug] = useState<string | null>(null);
 
     // Filters
     const [selectedApp, setSelectedApp] = useState<string>('');
@@ -817,8 +821,9 @@ const RcaManagerView = () => {
         apps: string[],
         releases: string[],
         devices: string[],
-        modules: string[]
-    }>({ apps: [], releases: [], devices: [], modules: [] });
+        modules: string[],
+        combinations: any[]
+    }>({ apps: [], releases: [], devices: [], modules: [], combinations: [] });
 
     // Cascading Handlers
     const handleAppChange = (val: string) => {
@@ -873,6 +878,28 @@ const RcaManagerView = () => {
         }
     };
 
+    // Derived Options based on selections (Cascading)
+    const dynamicOptions = {
+        apps: allMetadata.apps,
+        releases: selectedApp 
+            ? Array.from(new Set(allMetadata.combinations.filter(c => c.app === selectedApp).map(c => c.release)))
+            : [],
+        devices: (selectedApp && selectedRelease)
+            ? Array.from(new Set(allMetadata.combinations.filter(c => c.app === selectedApp && c.release === selectedRelease).map(c => c.device)))
+            : [],
+        modules: (selectedApp && selectedRelease && selectedDevice)
+            ? Array.from(new Set(allMetadata.combinations.filter(c => c.app === selectedApp && c.release === selectedRelease && c.device === selectedDevice).map(c => c.module)))
+            : []
+    };
+
+    const isFilterComplete = selectedApp && selectedRelease && selectedDevice && selectedModule;
+
+    const categoryStats = failures.reduce((acc: any, f) => {
+        const cat = f.rcaCategory || 'Unknown';
+        acc[cat] = (acc[cat] || 0) + 1;
+        return acc;
+    }, {});
+
     const fetchFailures = async () => {
         if (!selectedApp || !selectedRelease || !selectedDevice || !selectedModule) return;
         
@@ -894,6 +921,47 @@ const RcaManagerView = () => {
             console.error(err);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleCreateJiraBug = async (category: string) => {
+        const token = localStorage.getItem('resulthub_xray_token');
+        if (!token) {
+            alert('XRAY API Token not found. Please upload a report with token first, or go to Process Report tab.');
+            return;
+        }
+
+        const categoryFailures = failures.filter(f => (f.rcaCategory || 'Unknown') === category);
+        if (!confirm(`This will create ONE Jira Bug for all ${categoryFailures.length} failures in this category. Proceed?`)) {
+            return;
+        }
+
+        setCreatingBug(category);
+        try {
+            const response = await fetch('/api/rca/create-jira-bug', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    category,
+                    app: selectedApp,
+                    release: selectedRelease,
+                    device: selectedDevice,
+                    module: selectedModule,
+                    xrayToken: token
+                })
+            });
+
+            const result = await response.json();
+            if (response.ok) {
+                alert(`✅ Jira Bug Created: ${result.bugKey}\n\nLinked to ${result.count} test cases and Xray executions.`);
+                fetchFailures(); // Refresh to show the bug links
+            } else {
+                alert(`❌ Error: ${result.error}`);
+            }
+        } catch (err) {
+            alert('Failed to connect to Jira API.');
+        } finally {
+            setCreatingBug(null);
         }
     };
 
@@ -979,30 +1047,6 @@ const RcaManagerView = () => {
         setFilterCategory(null);
     };
 
-    // Dynamic filtering of options based on previous steps
-    const dynamicOptions = {
-        apps: allMetadata.apps,
-        releases: selectedApp 
-            ? Array.from(new Set(allMetadata.combinations.filter(c => c.app === selectedApp).map(c => c.release))).sort()
-            : [],
-        devices: selectedRelease 
-            ? Array.from(new Set(allMetadata.combinations.filter(c => c.app === selectedApp && c.release === selectedRelease).map(c => c.device))).sort()
-            : [],
-        modules: selectedDevice 
-            ? Array.from(new Set(allMetadata.combinations.filter(c => c.app === selectedApp && c.release === selectedRelease && c.device === selectedDevice).map(c => c.module))).sort()
-            : []
-    };
-
-    const isFilterComplete = [selectedApp, selectedRelease, selectedDevice, selectedModule].every(v => v && v.trim() !== "");
-
-    if (isMetaLoading && !allMetadata.apps.length) return <div className="flex justify-center p-20"><RefreshCcw className="animate-spin text-indigo-600" size={40} /></div>;
-
-    const categoryStats = failures.reduce((acc: any, f) => {
-        const cat = f.rcaCategory || 'Unknown';
-        acc[cat] = (acc[cat] || 0) + 1;
-        return acc;
-    }, {});
-
     const downloadRcaReport = () => {
         if (failures.length === 0) return;
         const exportData = failures.map(f => ({
@@ -1015,6 +1059,7 @@ const RcaManagerView = () => {
             'Step Failed': f.step,
             'Detected RCA': f.rcaCategory,
             'Verification Status': f.rcaStatus,
+            'Jira Bug': f.jiraBugKey || '',
             'Analysis Notes': f.rcaNote || '',
             'Error Message': f.errorMessage
         }));
@@ -1125,14 +1170,23 @@ const RcaManagerView = () => {
                                 <h4 className="text-2xl font-black">{failures.length}</h4>
                             </button>
                             {Object.entries(categoryStats).map(([cat, count]: any) => (
-                                <button 
-                                    key={cat} 
-                                    onClick={() => setFilterCategory(cat)}
-                                    className={`p-4 rounded-2xl border transition-all text-left ${filterCategory === cat ? 'bg-indigo-600 border-indigo-600 text-white shadow-lg' : 'bg-white border-gray-100 hover:border-indigo-200 shadow-sm'}`}
-                                >
-                                    <p className={`text-[10px] font-black uppercase mb-1 truncate ${filterCategory === cat ? 'text-indigo-100' : 'text-gray-400'}`}>{cat}</p>
-                                    <h4 className="text-2xl font-black">{count}</h4>
-                                </button>
+                                <div key={cat} className="group relative">
+                                    <button 
+                                        onClick={() => setFilterCategory(cat)}
+                                        className={`w-full p-4 rounded-2xl border transition-all text-left ${filterCategory === cat ? 'bg-indigo-600 border-indigo-600 text-white shadow-lg' : 'bg-white border-gray-100 hover:border-indigo-200 shadow-sm'}`}
+                                    >
+                                        <p className={`text-[10px] font-black uppercase mb-1 truncate ${filterCategory === cat ? 'text-indigo-100' : 'text-gray-400'}`}>{cat}</p>
+                                        <h4 className="text-2xl font-black">{count}</h4>
+                                    </button>
+                                    <button 
+                                        onClick={(e) => { e.stopPropagation(); handleCreateJiraBug(cat); }}
+                                        disabled={creatingBug !== null}
+                                        title="Create Jira Bug for this Category"
+                                        className="absolute -top-2 -right-2 bg-white text-indigo-600 p-2 rounded-xl shadow-lg border border-indigo-50 hover:bg-indigo-600 hover:text-white transition-all transform hover:scale-110 disabled:opacity-50"
+                                    >
+                                        {creatingBug === cat ? <RefreshCcw size={14} className="animate-spin" /> : <Layers size={14} />}
+                                    </button>
+                                </div>
                             ))}
                         </div>
 
@@ -1158,6 +1212,7 @@ const RcaManagerView = () => {
                                             <th className="py-6 px-8">Scenario / ID</th>
                                             <th className="py-6 px-8">Release / App</th>
                                             <th className="py-6 px-8 text-center">Detected RCA</th>
+                                            <th className="py-6 px-8 text-center">Jira Status</th>
                                             <th className="py-6 px-8 text-center">Status</th>
                                             <th className="py-6 px-8 text-right">Action</th>
                                         </tr>
@@ -1165,7 +1220,7 @@ const RcaManagerView = () => {
                                     <tbody className="text-sm divide-y divide-gray-50">
                                         {displayedFailures.length === 0 ? (
                                             <tr>
-                                                <td colSpan={5} className="py-24 text-center">
+                                                <td colSpan={6} className="py-24 text-center">
                                                     <div className="flex flex-col items-center space-y-4">
                                                         <div className="bg-amber-50 p-6 rounded-full">
                                                             <AlertTriangle size={48} className="text-amber-500" />
@@ -1192,7 +1247,7 @@ const RcaManagerView = () => {
                                                 <td className="py-6 px-8 text-center">
                                                     <div className="flex flex-col items-center space-y-1">
                                                         <span className={`px-4 py-1.5 rounded-xl text-[10px] font-black uppercase border whitespace-nowrap flex items-center ${getCategoryColor(f.rcaCategory)}`}>
-                                                            {f.rcaStatus === 'Verified' || f.rcaStatus === 'Fix Planned' ? (
+                                                            {f.rcaStatus === 'Verified' || f.rcaStatus === 'Fix Planned' || f.jiraBugKey ? (
                                                                 <UserCheck size={12} className="mr-1.5" />
                                                             ) : (
                                                                 <Activity size={12} className="mr-1.5" />
@@ -1200,18 +1255,41 @@ const RcaManagerView = () => {
                                                             {f.rcaCategory || 'Unknown'}
                                                         </span>
                                                         <span className="text-[8px] font-bold text-gray-400 uppercase tracking-tighter">
-                                                            {f.rcaStatus === 'Verified' || f.rcaStatus === 'Fix Planned' ? 'Human Verified' : 'System Identified'}
+                                                            {f.rcaStatus === 'Verified' || f.rcaStatus === 'Fix Planned' || f.jiraBugKey ? 'Verified' : 'System Identified'}
                                                         </span>
                                                     </div>
                                                 </td>
+                                                
+                                                <td className="py-6 px-8 text-center">
+                                                    {f.jiraBugKey ? (
+                                                        <a 
+                                                            href={f.jiraBugLink} 
+                                                            target="_blank" 
+                                                            rel="noopener noreferrer"
+                                                            className="inline-flex items-center bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-xl text-[10px] font-black hover:bg-indigo-600 hover:text-white transition-all border border-indigo-100"
+                                                        >
+                                                            <ArrowUpRight size={12} className="mr-1" />
+                                                            {f.jiraBugKey}
+                                                        </a>
+                                                    ) : (
+                                                        <span className="text-[10px] font-bold text-gray-300 uppercase italic">No Bug Linked</span>
+                                                    )}
+                                                </td>
 
                                                 <td className="py-6 px-8 text-center">
-                                                    <span className={`inline-flex items-center text-[10px] font-black uppercase ${f.rcaStatus === 'Verified' ? 'text-emerald-600' : 'text-gray-400'}`}>
-                                                        {f.rcaStatus === 'Verified' ? <CheckCircle size={14} className="mr-1.5" /> : <Activity size={14} className="mr-1.5" />}
-                                                        {f.rcaStatus || 'Auto-Detected'}
+                                                    <span className={`inline-flex items-center text-[10px] font-black uppercase ${f.rcaStatus === 'Verified' || f.jiraBugKey ? 'text-emerald-600' : 'text-gray-400'}`}>
+                                                        {f.rcaStatus === 'Verified' || f.jiraBugKey ? <CheckCircle size={14} className="mr-1.5" /> : <Activity size={14} className="mr-1.5" />}
+                                                        {f.jiraBugKey ? 'Verified' : (f.rcaStatus || 'Auto-Detected')}
                                                     </span>
                                                 </td>
-                                                <td className="py-6 px-8 text-right">
+                                                <td className="py-6 px-8 text-right flex items-center justify-end space-x-2">
+                                                    <button 
+                                                        onClick={() => syncRunRca(f.testRunSummaryId)} 
+                                                        title="Refresh RCA for this Run"
+                                                        className="p-3 bg-gray-50 hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 rounded-2xl transition-all shadow-sm border border-gray-100"
+                                                    >
+                                                        <RotateCw size={20} />
+                                                    </button>
                                                     <button onClick={() => setEditingFailure({...f})} className="p-3 bg-gray-50 hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 rounded-2xl transition-all shadow-sm border border-gray-100">
                                                         <Edit3 size={20} />
                                                     </button>
@@ -1306,7 +1384,222 @@ const RcaManagerView = () => {
     );
 };
 
-interface RunSummary { id: number; releaseName: string; module: string; channel: string; device: string; passCount: number; failCount: number; createdAt: string; }
+const JiraBugManagerView = () => {
+    const [groups, setGroups] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [creatingBug, setCreatingBug] = useState<string | null>(null);
+    const [jiraEmail, setJiraEmail] = useState('');
+    const [jiraToken, setJiraToken] = useState('');
+    const [jiraBaseUrl, setJiraBaseUrl] = useState('');
+    const [xrayToken, setXrayToken] = useState('');
+    const [projectKey, setProjectKey] = useState('DIG');
+
+    useEffect(() => {
+        // Load settings
+        setJiraEmail(sessionStorage.getItem('resulthub_jira_email') || '');
+        setJiraToken(sessionStorage.getItem('resulthub_jira_token') || '');
+        setJiraBaseUrl(sessionStorage.getItem('resulthub_jira_url') || '');
+        setXrayToken(sessionStorage.getItem('resulthub_xray_token_jira') || '');
+        setProjectKey(sessionStorage.getItem('resulthub_jira_project') || 'DIG');
+        fetchGroups();
+    }, []);
+
+    const fetchGroups = async () => {
+        setLoading(true);
+        try {
+            const response = await fetch('/api/jira/bug-groups');
+            const data = await response.json();
+            setGroups(data);
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const saveSettings = () => {
+        sessionStorage.setItem('resulthub_jira_email', jiraEmail);
+        sessionStorage.setItem('resulthub_jira_token', jiraToken);
+        sessionStorage.setItem('resulthub_jira_url', jiraBaseUrl);
+        sessionStorage.setItem('resulthub_xray_token_jira', xrayToken);
+        sessionStorage.setItem('resulthub_jira_project', projectKey);
+        alert('All Jira & Xray settings saved for this session.');
+    };
+
+    const handleCreateBug = async (group: any) => {
+        if (!jiraEmail || !jiraToken || !jiraBaseUrl || !xrayToken || !projectKey) {
+            alert('Please configure all Jira and Xray settings first.');
+            return;
+        }
+
+        setCreatingBug(`${group.release}-${group.app}-${group.category}`);
+        try {
+            const response = await fetch('/api/rca/create-jira-bug', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    category: group.category,
+                    app: group.app,
+                    release: group.release,
+                    xrayToken,
+                    jiraEmail,
+                    jiraToken,
+                    jiraBaseUrl,
+                    projectKey,
+                    issueType: 'Bug',
+                    severity: 'Medium',
+                    foundIn: "Regression Testing"
+                })
+            });
+
+            const result = await response.json();
+            if (response.ok) {
+                alert(`✅ Bug Created: ${result.bugKey}\nLinked to ${result.count} failures.`);
+                fetchGroups();
+            } else {
+                alert(`❌ Failed: ${result.error}`);
+            }
+        } catch (err) {
+            alert('Network error during bug creation.');
+        } finally {
+            setCreatingBug(null);
+        }
+    };
+
+    return (
+        <div className="space-y-8 animate-in fade-in duration-500">
+            {/* Jira Settings */}
+            <div className="bg-gray-900 p-8 rounded-[40px] text-white shadow-2xl border border-white/5 relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-8 opacity-10"><ShieldCheck size={120} /></div>
+                <div className="flex items-center space-x-4 mb-8">
+                    <div className="bg-indigo-600 p-3 rounded-2xl shadow-lg shadow-indigo-500/20"><Bug size={24} /></div>
+                    <div>
+                        <h3 className="text-xl font-black uppercase tracking-tighter">Jira Core Integration</h3>
+                        <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Connect board for automated bug reporting</p>
+                    </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 relative z-10">
+                    <div className="space-y-2 lg:col-span-2">
+                        <label className="text-[10px] font-black uppercase text-indigo-400 tracking-widest">Jira Base URL</label>
+                        <input value={jiraBaseUrl} onChange={e => setJiraBaseUrl(e.target.value)} placeholder="https://macys.atlassian.net" className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+                    </div>
+                    <div className="space-y-2 lg:col-span-2">
+                        <label className="text-[10px] font-black uppercase text-indigo-400 tracking-widest">Work Email</label>
+                        <input value={jiraEmail} onChange={e => setJiraEmail(e.target.value)} placeholder="your.name@macys.com" className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-black uppercase text-indigo-400 tracking-widest">Project Key</label>
+                        <input value={projectKey} onChange={e => setProjectKey(e.target.value)} placeholder="DIG" className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+                    </div>
+
+                    <div className="space-y-2 lg:col-span-2">
+                        <label className="text-[10px] font-black uppercase text-indigo-400 tracking-widest">Jira API Token</label>
+                        <input type="password" value={jiraToken} onChange={e => setJiraToken(e.target.value)} placeholder="••••••••" className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+                    </div>
+                    <div className="space-y-2 lg:col-span-2">
+                        <label className="text-[10px] font-black uppercase text-emerald-400 tracking-widest">Xray API Token</label>
+                        <div className="flex space-x-2">
+                            <input type="password" value={xrayToken} onChange={e => setXrayToken(e.target.value)} placeholder="••••••••" className="flex-1 bg-white/5 border border-white/10 rounded-2xl px-5 py-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" />
+                            <button onClick={saveSettings} title="Save all settings" className="bg-indigo-600 hover:bg-indigo-700 p-3 rounded-2xl transition-all shadow-xl shadow-indigo-500/20"><Save size={20} /></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Groups Table */}
+            <div className="bg-white rounded-[40px] border border-gray-100 shadow-2xl overflow-hidden">
+                <div className="p-8 border-b border-gray-100 flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                        <div className="bg-indigo-50 p-2 rounded-xl text-indigo-600"><Layers size={20} /></div>
+                        <h3 className="text-xl font-black text-gray-900 uppercase tracking-tighter">Consolidated Bug Candidates</h3>
+                    </div>
+                    <button onClick={fetchGroups} className="bg-gray-50 hover:bg-gray-100 p-3 rounded-2xl text-gray-400 transition-all"><RotateCw size={20} /></button>
+                </div>
+                
+                {loading ? (
+                    <div className="py-32 flex flex-col items-center justify-center space-y-4">
+                        <RefreshCcw size={48} className="animate-spin text-indigo-600" />
+                        <p className="font-black text-gray-400 uppercase text-xs tracking-widest">Consolidating Failures...</p>
+                    </div>
+                ) : groups.length === 0 ? (
+                    <div className="py-32 text-center">
+                        <div className="bg-emerald-50 inline-block p-8 rounded-full mb-6"><CheckCircle size={48} className="text-emerald-500" /></div>
+                        <h4 className="text-xl font-black text-gray-900">Zero Pending Issues</h4>
+                        <p className="text-gray-400 font-bold text-xs uppercase mt-2">All failures are either fixed or already bugged.</p>
+                    </div>
+                ) : (
+                    <table className="w-full text-left">
+                        <thead className="bg-gray-50 text-[10px] text-gray-400 uppercase font-black tracking-widest">
+                            <tr>
+                                <th className="py-6 px-8">Release / Project</th>
+                                <th className="py-6 px-8">RCA Category</th>
+                                <th className="py-6 px-8 text-center">Failures</th>
+                                <th className="py-6 px-8 text-center">Status</th>
+                                <th className="py-6 px-8 text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-50">
+                            {groups.map((group, idx) => {
+                                const isPending = !group.jiraBugKey;
+                                const isProcessing = creatingBug === `${group.release}-${group.app}-${group.category}`;
+                                
+                                return (
+                                    <tr key={idx} className="hover:bg-gray-50/50 transition-colors">
+                                        <td className="py-6 px-8">
+                                            <div className="font-black text-gray-900 text-sm">{group.release}</div>
+                                            <div className="text-[10px] font-black text-indigo-600 uppercase tracking-tighter mt-1">{group.app}</div>
+                                        </td>
+                                        <td className="py-6 px-8">
+                                            <span className="px-4 py-1.5 rounded-xl bg-gray-100 text-gray-700 text-[10px] font-black uppercase border border-gray-200">{group.category}</span>
+                                        </td>
+                                        <td className="py-6 px-8 text-center">
+                                            <div className="inline-flex flex-col">
+                                                <span className="text-lg font-black text-gray-900">{group.failCount}</span>
+                                                <span className="text-[8px] font-bold text-gray-400 uppercase">Tests</span>
+                                            </div>
+                                        </td>
+                                        <td className="py-6 px-8 text-center">
+                                            {group.jiraBugKey ? (
+                                                <a href={group.jiraBugLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center space-x-1.5 bg-emerald-50 text-emerald-600 px-4 py-2 rounded-2xl text-[10px] font-black hover:bg-emerald-600 hover:text-white transition-all border border-emerald-100 shadow-sm">
+                                                    <Bug size={12} />
+                                                    <span>{group.jiraBugKey}</span>
+                                                    <ExternalLink size={10} />
+                                                </a>
+                                            ) : (
+                                                <span className="inline-flex items-center text-amber-600 bg-amber-50 px-4 py-2 rounded-2xl text-[10px] font-black border border-amber-100">
+                                                    <AlertTriangle size={12} className="mr-1.5" />
+                                                    PENDING REPORT
+                                                </span>
+                                            )}
+                                        </td>
+                                        <td className="py-6 px-8 text-right">
+                                            {isPending ? (
+                                                <button 
+                                                    onClick={() => handleCreateBug(group)}
+                                                    disabled={creatingBug !== null}
+                                                    className="inline-flex items-center space-x-2 bg-indigo-600 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl shadow-indigo-200 hover:bg-indigo-700 disabled:opacity-50 transition-all"
+                                                >
+                                                    {isProcessing ? <RefreshCcw size={14} className="animate-spin" /> : <Bug size={14} />}
+                                                    <span>Create 1 Bug for {group.failCount} Tests</span>
+                                                </button>
+                                            ) : (
+                                                <span className="text-[10px] font-black text-emerald-500 flex items-center justify-end uppercase tracking-widest">
+                                                    <CheckCircle size={14} className="mr-1.5" /> Tracked
+                                                </span>
+                                            )}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                )}
+            </div>
+        </div>
+    );
+};
+
+interface RunSummary { id: number; releaseName: string; module: string; channel: string; device: string; passCount: number; failCount: number; createdAt: string; jiraExecutionKey?: string | null; }
 
 const HistoryView = () => {
     const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -1367,8 +1660,8 @@ const HistoryView = () => {
     const getNamingSource = (module: string) => {
         // If the module name contains spaces, it was likely cleaned from a JSON ID
         // (Original filename parts were stored with spaces in our new logic)
-        if (module.includes(' ')) return { label: 'JSON ID', color: 'text-emerald-600 bg-emerald-50' };
-        return { label: 'Filename', color: 'text-amber-600 bg-amber-50' };
+        if (module.includes(' ')) return { label: 'JSON ID', color: 'text-emerald-600 bg-emerald-50 border-emerald-100' };
+        return { label: 'Filename', color: 'text-amber-600 bg-amber-50 border-amber-100' };
     };
 
     if (loading) return <div className="flex justify-center p-10"><RefreshCcw className="animate-spin text-indigo-600" /></div>;
@@ -1450,7 +1743,7 @@ const HistoryView = () => {
 };
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'upload' | 'history' | 'analytics' | 'moduleAnalysis' | 'rca'>('upload');
+  const [activeTab, setActiveTab] = useState<'upload' | 'history' | 'analytics' | 'moduleAnalysis' | 'rca' | 'jira'>('upload');
   return (
     <div className="flex h-screen bg-gray-50 font-sans">
       <aside className="w-72 bg-white p-6 shadow-xl flex flex-col justify-between border-r">
@@ -1460,12 +1753,13 @@ export default function Home() {
             <NavItem icon={<BarChart3 size={20} />} label="Analytics Dashboard" active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')} />
             <NavItem icon={<PieIcon size={20} />} label="Module Analysis" active={activeTab === 'moduleAnalysis'} onClick={() => setActiveTab('moduleAnalysis')} />
             <NavItem icon={<AlertTriangle size={20} />} label="Failure RCA" active={activeTab === 'rca'} onClick={() => setActiveTab('rca')} />
+            <NavItem icon={<Bug size={20} />} label="Jira Bug Manager" active={activeTab === 'jira'} onClick={() => setActiveTab('jira')} />
             <NavItem icon={<History size={20} />} label="History Management" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
           </nav>
         </div>
         <div className="text-center text-xs font-bold border-t pt-4 font-sans"><p>&copy; {new Date().getFullYear()} Execution Results</p></div>
       </aside>
-      <main className="flex-1 p-12 overflow-y-auto"><div className="max-w-[95%] mx-auto"><div className="mb-10 text-center lg:text-left"><h2 className="text-4xl font-extrabold text-gray-900 font-sans">{activeTab === 'upload' ? 'Report Processor' : activeTab === 'analytics' ? 'Execution Analytics' : activeTab === 'moduleAnalysis' ? 'Module Deep-Dive' : activeTab === 'rca' ? 'Root Cause Analysis' : 'History & Overrides'}</h2><p className="text-gray-700 mt-2 text-lg font-medium font-sans">{activeTab === 'upload' ? 'Sync Cucumber with Jira Xray.' : activeTab === 'analytics' ? 'Visualize test health and trends.' : activeTab === 'moduleAnalysis' ? 'Examine per-module stability and DNA.' : activeTab === 'rca' ? 'Categorize and manage test failures.' : 'Review past uploads.'}</p></div><div className="bg-white p-10 rounded-3xl shadow-xl border border-gray-100">{activeTab === 'upload' ? <XrayUploadForm /> : activeTab === 'analytics' ? <AnalyticsView /> : activeTab === 'moduleAnalysis' ? <ModuleAnalysisView /> : activeTab === 'rca' ? <RcaManagerView /> : <HistoryView />}</div></div></main>
+      <main className="flex-1 p-12 overflow-y-auto"><div className="max-w-[95%] mx-auto"><div className="mb-10 text-center lg:text-left"><h2 className="text-4xl font-extrabold text-gray-900 font-sans">{activeTab === 'upload' ? 'Report Processor' : activeTab === 'analytics' ? 'Execution Analytics' : activeTab === 'moduleAnalysis' ? 'Module Deep-Dive' : activeTab === 'rca' ? 'Root Cause Analysis' : activeTab === 'jira' ? 'Jira Bug Manager' : 'History & Overrides'}</h2><p className="text-gray-700 mt-2 text-lg font-medium font-sans">{activeTab === 'upload' ? 'Sync Cucumber with Jira Xray.' : activeTab === 'analytics' ? 'Visualize test health and trends.' : activeTab === 'moduleAnalysis' ? 'Examine per-module stability and DNA.' : activeTab === 'rca' ? 'Categorize and manage test failures.' : activeTab === 'jira' ? 'Consolidate failures into Jira bugs.' : 'Review past uploads.'}</p></div><div className="bg-white p-10 rounded-3xl shadow-xl border border-gray-100">{activeTab === 'upload' ? <XrayUploadForm /> : activeTab === 'analytics' ? <AnalyticsView /> : activeTab === 'moduleAnalysis' ? <ModuleAnalysisView /> : activeTab === 'rca' ? <RcaManagerView /> : activeTab === 'jira' ? <JiraBugManagerView /> : <HistoryView />}</div></div></main>
     </div>
   );
 }

@@ -25,6 +25,10 @@ model TestRunSummary {
   p3Executed      Int
   p4Executed      Int
   reportHash      String?  @unique // To prevent duplicate uploads
+  
+  // Jira Integration
+  jiraExecutionKey String? // Store EXEC-XXX key from Xray
+  
   createdAt       DateTime @default(now())
 
   testCaseResults TestCaseResult[]
@@ -41,10 +45,14 @@ model TestCaseResult {
   errorMessage     String?  @db.Text
   stackTrace       String?  @db.Text
   
-  // New RCA Fields
+  // Root Cause Analysis Fields
   rcaCategory      String?
   rcaNote          String?  @db.Text
   rcaStatus        String?  @default("Auto-Detected")
+
+  // Jira Bug Tracking
+  jiraBugKey       String?  // Store BUG-XXX key
+  jiraBugLink      String?  // Store full URL to Jira ticket
   
   createdAt        DateTime @default(now())
   
