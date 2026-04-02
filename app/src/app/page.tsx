@@ -32,6 +32,7 @@ import {
     RotateCw,
     ShieldCheck,
     ExternalLink,
+    Link2Off,
     Bug
 } from 'lucide-react';
 import { 
@@ -1466,6 +1467,37 @@ const JiraBugManagerView = () => {
         }
     };
 
+    const handleUnlinkBug = async (group: any) => {
+        if (!confirm(`Are you sure you want to UNLINK bug ${group.jiraBugKey} from these ${group.failCount} failures?\n\nThis will NOT delete the Jira ticket, but will mark these failures as 'Pending Report' in ResultHub.`)) {
+            return;
+        }
+
+        setCreatingBug(`unlink-${group.release}-${group.app}-${group.category}`);
+        try {
+            const response = await fetch('/api/jira/unlink-bug', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    category: group.category,
+                    app: group.app,
+                    release: group.release
+                })
+            });
+
+            const result = await response.json();
+            if (response.ok) {
+                alert(`✅ Successfully unlinked ${result.count} failures.`);
+                fetchGroups();
+            } else {
+                alert(`❌ Failed: ${result.error}`);
+            }
+        } catch (err) {
+            alert('Network error during unlinking.');
+        } finally {
+            setCreatingBug(null);
+        }
+    };
+
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
             {/* Jira Settings */}
@@ -1542,6 +1574,7 @@ const JiraBugManagerView = () => {
                             {groups.map((group, idx) => {
                                 const isPending = !group.jiraBugKey;
                                 const isProcessing = creatingBug === `${group.release}-${group.app}-${group.category}`;
+                                const isUnlinking = creatingBug === `unlink-${group.release}-${group.app}-${group.category}`;
                                 
                                 return (
                                     <tr key={idx} className="hover:bg-gray-50/50 transition-colors">
@@ -1573,20 +1606,32 @@ const JiraBugManagerView = () => {
                                             )}
                                         </td>
                                         <td className="py-6 px-8 text-right">
-                                            {isPending ? (
-                                                <button 
-                                                    onClick={() => handleCreateBug(group)}
-                                                    disabled={creatingBug !== null}
-                                                    className="inline-flex items-center space-x-2 bg-indigo-600 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl shadow-indigo-200 hover:bg-indigo-700 disabled:opacity-50 transition-all"
-                                                >
-                                                    {isProcessing ? <RefreshCcw size={14} className="animate-spin" /> : <Bug size={14} />}
-                                                    <span>Create 1 Bug for {group.failCount} Tests</span>
-                                                </button>
-                                            ) : (
-                                                <span className="text-[10px] font-black text-emerald-500 flex items-center justify-end uppercase tracking-widest">
-                                                    <CheckCircle size={14} className="mr-1.5" /> Tracked
-                                                </span>
-                                            )}
+                                            <div className="flex items-center justify-end space-x-2">
+                                                {isPending ? (
+                                                    <button 
+                                                        onClick={() => handleCreateBug(group)}
+                                                        disabled={creatingBug !== null}
+                                                        className="inline-flex items-center space-x-2 bg-indigo-600 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl shadow-indigo-200 hover:bg-indigo-700 disabled:opacity-50 transition-all"
+                                                    >
+                                                        {isProcessing ? <RefreshCcw size={14} className="animate-spin" /> : <Bug size={14} />}
+                                                        <span>Create 1 Bug for {group.failCount} Tests</span>
+                                                    </button>
+                                                ) : (
+                                                    <>
+                                                        <span className="text-[10px] font-black text-emerald-500 flex items-center uppercase tracking-widest mr-2">
+                                                            <CheckCircle size={14} className="mr-1.5" /> Tracked
+                                                        </span>
+                                                        <button 
+                                                            onClick={() => handleUnlinkBug(group)}
+                                                            disabled={creatingBug !== null}
+                                                            title="Unlink bug from these failures"
+                                                            className="p-3 bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white rounded-2xl transition-all border border-rose-100"
+                                                        >
+                                                            {isUnlinking ? <RefreshCcw size={18} className="animate-spin" /> : <Link2Off size={18} />}
+                                                        </button>
+                                                    </>
+                                                )}
+                                            </div>
                                         </td>
                                     </tr>
                                 );
